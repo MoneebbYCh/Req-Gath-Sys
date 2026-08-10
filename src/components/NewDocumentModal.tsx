@@ -42,8 +42,7 @@ export function NewDocumentModal({ onCreate, onCancel }: NewDocumentModalProps) 
 
         <div className="tut-body">
           <p className="tut-desc" style={{ minHeight: 'auto' }}>
-            Add a custom document to this pipeline. It gets its own canvas, AI chat, and templates —
-            and is shared across all versions in this workspace.
+            Add a custom document to this pipeline. It gets its own canvas, AI chat, and templates.
           </p>
 
           <label className="newdoc-label" htmlFor="newdoc-name">

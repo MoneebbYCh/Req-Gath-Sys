@@ -1,20 +1,21 @@
 import type { BlockNoteBlock } from '../types/document'
 import {
-  CHARTER_TEMPLATES,
-  CUSTOM_CHARTER_TEMPLATE,
-  type CharterTemplate,
-} from './charterTemplates'
+  BLANK_TEMPLATE,
+  type DocTemplate,
+} from './docTemplateTypes'
 import { workspaceScopedKey } from '../utils/workspaceScope'
 
 /**
- * Template registry keyed by document type. Built-in curated templates exist
- * only for the project charter today; every other type (built-in or custom)
- * starts from the blank option plus any templates the user saves. User
- * templates are stored per type and per workspace folder.
+ * Template registry keyed by document type.
+ * There are no hard-coded curated starters — every type gets the blank option
+ * plus any templates the user saves (stored per type and workspace folder).
+ *
+ * Curated charter templates (PMBOK, Lean, Agile, Six Sigma) live under
+ * reference/legacy-pipeline/ for lookup only.
  */
 
-export { CUSTOM_CHARTER_TEMPLATE }
-export type { CharterTemplate }
+export type { DocTemplate, CharterTemplate } from './docTemplateTypes'
+export { BLANK_TEMPLATE, CUSTOM_CHARTER_TEMPLATE, templateOutline } from './docTemplateTypes'
 
 interface StoredUserTemplate {
   id: string
@@ -26,10 +27,6 @@ interface StoredUserTemplate {
 
 function userKey(typeId: string): string {
   return workspaceScopedKey(`charter-ai-user-templates-${typeId}-v1`)
-}
-
-function curatedFor(typeId: string): CharterTemplate[] {
-  return typeId === 'project-charter' ? CHARTER_TEMPLATES : []
 }
 
 function readUserStored(typeId: string): StoredUserTemplate[] {
@@ -55,7 +52,7 @@ function writeUserStored(typeId: string, list: StoredUserTemplate[]): void {
   }
 }
 
-function toTemplate(stored: StoredUserTemplate): CharterTemplate {
+function toTemplate(stored: StoredUserTemplate): DocTemplate {
   return {
     id: stored.id,
     name: stored.name,
@@ -69,23 +66,23 @@ function toTemplate(stored: StoredUserTemplate): CharterTemplate {
   }
 }
 
-/** Curated + user-saved templates for a document type (excludes the blank option). */
-export function templatesForType(typeId: string): CharterTemplate[] {
-  return [...curatedFor(typeId), ...readUserStored(typeId).map(toTemplate)]
+/** User-saved templates for a document type (excludes the blank option). */
+export function templatesForType(typeId: string): DocTemplate[] {
+  return readUserStored(typeId).map(toTemplate)
 }
 
 /** All selectable options including the blank "Build from scratch" template. */
-export function templateOptionsForType(typeId: string): CharterTemplate[] {
-  return [...templatesForType(typeId), CUSTOM_CHARTER_TEMPLATE]
+export function templateOptionsForType(typeId: string): DocTemplate[] {
+  return [...templatesForType(typeId), BLANK_TEMPLATE]
 }
 
-export function resolveTemplate(typeId: string, id: string | undefined): CharterTemplate | undefined {
+export function resolveTemplate(typeId: string, id: string | undefined): DocTemplate | undefined {
   if (!id) return undefined
   return templateOptionsForType(typeId).find((t) => t.id === id)
 }
 
 /** Save the current document blocks as a reusable template for this type. */
-export function saveUserTemplate(typeId: string, name: string, blocks: BlockNoteBlock[]): CharterTemplate {
+export function saveUserTemplate(typeId: string, name: string, blocks: BlockNoteBlock[]): DocTemplate {
   const trimmed = name.trim() || 'Saved template'
   const stored: StoredUserTemplate = {
     id: `saved-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,

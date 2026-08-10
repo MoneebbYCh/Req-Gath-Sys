@@ -1,7 +1,7 @@
 /**
  * Scopes webview localStorage to the VS Code folder currently open.
  * Disk persistence already lives under that folder's `.charter-ai/`;
- * this prevents drafts/versions/templates from leaking across projects.
+ * this prevents drafts/templates from leaking across projects.
  */
 
 let workspacePath: string | null = null
@@ -52,4 +52,12 @@ export function hasWorkspaceScope(): boolean {
 export function workspaceScopedKey(baseKey: string): string {
   if (!workspaceId) return baseKey
   return `${baseKey}@@${workspaceId}`
+}
+
+/** localStorage base key for the templates tutorial. */
+export const TEMPLATE_TUTORIAL_BASE_KEY = 'charter-ai-template-tutorial-seen-v1'
+
+/** localStorage key for a doc/tutorial: workspace-scoped. */
+export function storageKeyFor(baseKey: string): string {
+  return workspaceScopedKey(baseKey)
 }

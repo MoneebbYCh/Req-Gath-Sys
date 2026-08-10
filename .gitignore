@@ -45,6 +45,13 @@ coverage
 .charter-ai
 .req-gath-sys
 
+# Madar / graphify leftovers (no longer used)
+graphify-out/
+out/cache/
+out/graph.json
+out/GRAPH_REPORT.md
+out/manifest.json
+
 # OS
 .DS_Store
 Thumbs.db

@@ -8,6 +8,7 @@ import {
   deleteDocType,
   getDocumentType,
   listDocumentTypes,
+  listPipelineDocumentTypes,
   type DocumentTypeMeta,
 } from '../data/documentTypes'
 import {
@@ -16,34 +17,25 @@ import {
   toCanvasDocument,
   type CanvasDocument,
 } from '../types/document'
-import { useCodeIndex } from '../hooks/useCodeIndex'
 import { loadProfile, profileInitials } from '../utils/profile'
 import { getVscodeApi } from '../utils/vscodeApi'
-import {
-  createVersion,
-  deleteVersion,
-  getActiveVersionId,
-  listVersions,
-  renameVersion,
-  setActiveVersionId,
-  storageKeyFor,
-  type DocVersion,
-} from '../utils/versions'
-import { hasWorkspaceScope } from '../utils/workspaceScope'
+import { storageKeyFor, hasWorkspaceScope } from '../utils/workspaceScope'
 
 interface HomePageProps {
   onNavigate: (view: View) => void
+  /** Send a home-orchestrator chat message (opens the side panel). */
+  onAsk?: (text: string) => void
+  isAsking?: boolean
+  /** Bumped when extension pushes updated doc types (e.g. generate_pipeline). */
+  docTypesRev?: number
 }
 
-function loadSavedDoc(
-  phaseId: string,
-  versionId: string,
-): { doc: CanvasDocument | null; hasDraft: boolean } {
+function loadSavedDoc(phaseId: string): { doc: CanvasDocument | null; hasDraft: boolean } {
   try {
     const meta = getDocumentType(phaseId)
     if (!meta) return { doc: null, hasDraft: false }
     const raw =
-      localStorage.getItem(storageKeyFor(meta.storageKey, versionId)) ??
+      localStorage.getItem(storageKeyFor(meta.storageKey)) ??
       (meta.legacyStorageKey ? localStorage.getItem(meta.legacyStorageKey) : null)
     if (!raw) return { doc: null, hasDraft: false }
     const doc = toCanvasDocument(JSON.parse(raw))
@@ -53,43 +45,41 @@ function loadSavedDoc(
   }
 }
 
-/** Wipe a version's docs (built-in + custom) both locally and on disk. */
-function clearVersionDocs(versionId: string) {
+/** Wipe all docs (built-in + custom) both locally and on disk. */
+function clearAllDocs() {
   const vscode = getVscodeApi()
   const empty = emptyCanvasDocument()
   listDocumentTypes().forEach((meta) => {
     try {
-      localStorage.removeItem(storageKeyFor(meta.storageKey, versionId))
+      localStorage.removeItem(storageKeyFor(meta.storageKey))
       if (!hasWorkspaceScope() && meta.legacyStorageKey) {
         localStorage.removeItem(meta.legacyStorageKey)
       }
     } catch {
       /* ignore storage errors */
     }
-    vscode?.postMessage({ type: 'saveCanvas', phase: meta.id, version: versionId, data: empty })
+    vscode?.postMessage({ type: 'saveCanvas', phase: meta.id, data: empty })
   })
 }
 
-export function HomePage({ onNavigate }: HomePageProps) {
-  const { state, startIndexing, loadIndex, reset } = useCodeIndex()
+export function HomePage({ onNavigate, onAsk, isAsking, docTypesRev: docTypesRevProp = 0 }: HomePageProps) {
   const [profile] = useState(() => loadProfile())
 
-  const [versions, setVersions] = useState<DocVersion[]>(() => listVersions())
-  const [activeId, setActiveId] = useState<string>(() => getActiveVersionId())
-  const [pendingReset, setPendingReset] = useState<DocVersion | null>(null)
-  const [pendingDelete, setPendingDelete] = useState<DocVersion | null>(null)
+  const [pendingReset, setPendingReset] = useState(false)
   // Bumped whenever the custom document-type list changes.
-  const [docTypesRev, setDocTypesRev] = useState(0)
+  const [docTypesRevLocal, setDocTypesRev] = useState(0)
+  const docTypesRev = docTypesRevLocal + docTypesRevProp
   const [showNewDoc, setShowNewDoc] = useState(false)
   const [pendingDeleteDoc, setPendingDeleteDoc] = useState<DocumentTypeMeta | null>(null)
   const [workspace, setWorkspace] = useState<{ path: string; name: string } | null>(null)
+  const [homeAsk, setHomeAsk] = useState('')
 
-  const docTypes = useMemo(() => listDocumentTypes(), [docTypesRev])
-  const activeVersion = versions.find((v) => v.id === activeId) ?? versions[0]
-  const hasDraft = useMemo(
-    () => loadSavedDoc('project-charter', activeId).hasDraft,
-    [activeId],
-  )
+  const docTypes = useMemo(() => listPipelineDocumentTypes(), [docTypesRev])
+  const hasDraft = useMemo(() => {
+    return listPipelineDocumentTypes().some((meta) => loadSavedDoc(meta.id).hasDraft)
+  }, [docTypesRev])
+
+  const firstDocId = docTypes[0]?.id ?? null
 
   useEffect(() => {
     const vscode = getVscodeApi()
@@ -108,41 +98,10 @@ export function HomePage({ onNavigate }: HomePageProps) {
     return () => window.removeEventListener('message', handler)
   }, [])
 
-  const openVersion = (id: string) => {
-    setActiveVersionId(id)
-    setActiveId(id)
-    onNavigate({ page: 'project-charter' })
-  }
-
-  const handleNewVersion = () => {
-    const version = createVersion()
-    setVersions(listVersions())
-    openVersion(version.id)
-  }
-
-  const handleRename = (version: DocVersion) => {
-    const next = window.prompt('Rename version', version.name)
-    if (next && next.trim()) {
-      renameVersion(version.id, next)
-      setVersions(listVersions())
-    }
-  }
-
   const confirmReset = () => {
-    if (!pendingReset) return
-    clearVersionDocs(pendingReset.id)
-    setPendingReset(null)
-    if (pendingReset.id === activeId) {
-      openVersion(activeId)
-    }
-  }
-
-  const confirmDelete = () => {
-    if (!pendingDelete) return
-    const next = deleteVersion(pendingDelete.id)
-    setVersions(next)
-    setActiveId(getActiveVersionId())
-    setPendingDelete(null)
+    clearAllDocs()
+    setPendingReset(false)
+    if (firstDocId) onNavigate({ page: firstDocId })
   }
 
   const handleCreateDoc = (name: string, icon: string) => {
@@ -195,42 +154,38 @@ export function HomePage({ onNavigate }: HomePageProps) {
             <div className="flex items-start justify-between gap-4 flex-wrap">
               <div className="min-w-0">
                 <BrandMark size="lg" className="mb-3" />
-                <p className="text-sm text-on-surface-variant mb-1 max-w-md">
-                  Select a pipeline stage below or resume your active version.
-                </p>
-                <p
-                  className="text-[11px] font-bold uppercase tracking-widest text-primary mb-4"
-                  style={{ fontFamily: 'var(--font-label)' }}
-                >
-                  Active · {activeVersion?.name ?? 'Version 1'}
+                <p className="text-sm text-on-surface-variant mb-4 max-w-md">
+                  Ask below to generate the docs this project needs — the Documents grid starts empty.
                 </p>
                 <div className="flex flex-wrap items-center gap-2">
+                  {firstDocId ? (
+                    <button
+                      type="button"
+                      onClick={() => onNavigate({ page: firstDocId })}
+                      className="border-2 border-on-background bg-primary text-on-primary font-bold px-6 py-2 text-sm outset-button hover:opacity-90"
+                      style={{ fontFamily: 'var(--font-label)' }}
+                    >
+                      {hasDraft ? 'Resume Documents' : 'Open Documents'}
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => setShowNewDoc(true)}
+                      className="border-2 border-on-background bg-primary text-on-primary font-bold px-6 py-2 text-sm outset-button hover:opacity-90"
+                      style={{ fontFamily: 'var(--font-label)' }}
+                    >
+                      New Document
+                    </button>
+                  )}
                   <button
                     type="button"
-                    onClick={() => onNavigate({ page: 'project-charter' })}
-                    className="border-2 border-on-background bg-primary text-on-primary font-bold px-6 py-2 text-sm outset-button hover:opacity-90"
-                    style={{ fontFamily: 'var(--font-label)' }}
-                  >
-                    {hasDraft ? 'Resume Charter' : 'Launch New Pipeline'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleNewVersion}
-                    className="border-2 border-on-background bg-white text-on-background font-bold px-6 py-2 text-sm outset-button hover:bg-surface-container-low"
-                    style={{ fontFamily: 'var(--font-label)' }}
-                    title="Create a fresh, independent version in this codebase"
-                  >
-                    New Version
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => activeVersion && setPendingReset(activeVersion)}
+                    onClick={() => setPendingReset(true)}
                     className="border-2 border-on-background bg-white text-on-background font-bold px-6 py-2 text-sm outset-button hover:bg-surface-container-low disabled:opacity-40"
                     style={{ fontFamily: 'var(--font-label)' }}
-                    title="Clear this version's documents back to blank"
+                    title="Clear all documents back to blank"
                     disabled={!hasDraft}
                   >
-                    Reset Version
+                    Reset Documents
                   </button>
                 </div>
               </div>
@@ -280,121 +235,89 @@ export function HomePage({ onNavigate }: HomePageProps) {
             </div>
           </div>
 
-          {hasDraft && (
-            <div className="border-b-2 border-on-background bg-surface-container-low px-4 md:px-6 py-2 flex items-center justify-between flex-wrap gap-2">
-              <span className="text-xs text-on-surface-variant" style={{ fontFamily: 'var(--font-label)' }}>
-                Active draft on disk
-              </span>
-              <button
-                type="button"
-                onClick={() => onNavigate({ page: 'project-charter' })}
-                className="border-2 border-on-background bg-primary text-on-primary font-bold px-4 py-1 text-xs outset-button"
-                style={{ fontFamily: 'var(--font-label)' }}
-              >
-                Open Charter
-              </button>
-            </div>
-          )}
-
-          <div className="p-4 md:p-6 border-b-2 border-on-background">
-            <div className="flex items-center gap-2 mb-3">
+          <div className="home-ask-section border-b-2 border-on-background px-4 md:px-6 py-4">
+            <div className="flex items-center gap-2 mb-2">
               <span
                 className="text-xs font-bold tracking-widest text-on-surface-variant uppercase"
                 style={{ fontFamily: 'var(--font-label)' }}
               >
-                Versions
+                Ask Charter Ai
               </span>
               <div className="flex-1 h-px bg-on-background/30" />
               <span
                 className="text-[11px] text-on-surface-variant"
                 style={{ fontFamily: 'var(--font-label)' }}
               >
-                Independent doc sets · same codebase
+                Reads the codebase · builds your doc set
               </span>
             </div>
-            <div className="border-2 border-on-background divide-y-2 divide-on-background">
-              {versions.map((version) => {
-                const isActive = version.id === activeId
-                return (
-                  <div
-                    key={version.id}
-                    className={`flex items-center gap-3 px-3 py-2 ${
-                      isActive ? 'bg-secondary-container' : 'bg-white'
-                    }`}
-                  >
-                    <span
-                      className={`w-2.5 h-2.5 border-2 border-on-background shrink-0 ${
-                        isActive ? 'bg-primary' : 'bg-transparent'
-                      }`}
-                      aria-hidden
-                    />
-                    <div className="min-w-0 flex-1">
-                      <div
-                        className="font-bold text-sm text-on-background truncate"
-                        style={{ fontFamily: 'var(--font-headline)' }}
-                      >
-                        {version.name}
-                        {isActive ? (
-                          <span
-                            className="ml-2 text-[10px] font-bold uppercase tracking-widest text-primary"
-                            style={{ fontFamily: 'var(--font-label)' }}
-                          >
-                            Active
-                          </span>
-                        ) : null}
-                      </div>
-                      <div
-                        className="text-[11px] text-on-surface-variant"
-                        style={{ fontFamily: 'var(--font-label)' }}
-                      >
-                        Updated {new Date(version.updatedAt).toLocaleDateString()}
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-1.5 shrink-0">
-                      <button
-                        type="button"
-                        onClick={() => openVersion(version.id)}
-                        className="border-2 border-on-background bg-primary text-on-primary font-bold px-3 py-0.5 text-xs outset-button"
-                        style={{ fontFamily: 'var(--font-label)' }}
-                      >
-                        Open
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleRename(version)}
-                        className="border-2 border-on-background bg-white text-on-background font-bold px-3 py-0.5 text-xs outset-button"
-                        style={{ fontFamily: 'var(--font-label)' }}
-                      >
-                        Rename
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setPendingDelete(version)}
-                        disabled={versions.length <= 1}
-                        className="border-2 border-on-background bg-white text-on-background font-bold px-3 py-0.5 text-xs outset-button disabled:opacity-40"
-                        style={{ fontFamily: 'var(--font-label)' }}
-                        title={versions.length <= 1 ? 'Cannot delete the only version' : 'Delete version'}
-                      >
-                        Delete
-                      </button>
-                    </div>
-                  </div>
-                )
-              })}
-            </div>
-            <div className="mt-3">
+            <form
+              className="home-ask-bar"
+              onSubmit={(e) => {
+                e.preventDefault()
+                const text = homeAsk.trim()
+                if (!text || isAsking || !onAsk) return
+                onAsk(text)
+                setHomeAsk('')
+              }}
+            >
+              <input
+                className="home-ask-input"
+                type="text"
+                value={homeAsk}
+                onChange={(e) => setHomeAsk(e.target.value)}
+                placeholder="e.g. What docs does this repo need? Add an ADR + API contract…"
+                disabled={Boolean(isAsking) || !onAsk}
+                aria-label="Ask Charter Ai to design documents for this project"
+              />
               <button
-                type="button"
-                onClick={handleNewVersion}
-                className="border-2 border-on-background bg-white text-on-background font-bold px-4 py-1 text-xs outset-button hover:bg-surface-container-low"
+                type="submit"
+                className="home-ask-submit border-2 border-on-background bg-primary text-on-primary font-bold px-5 py-2 text-sm outset-button hover:opacity-90 disabled:opacity-40"
                 style={{ fontFamily: 'var(--font-label)' }}
+                disabled={!homeAsk.trim() || Boolean(isAsking) || !onAsk}
               >
-                + New Version
+                {isAsking ? 'Working…' : 'Ask'}
               </button>
+            </form>
+            <div className="home-ask-hints">
+              {[
+                'What documents does this project need?',
+                'Build a docs pipeline for this codebase',
+                'Add a migration runbook and API contract',
+              ].map((hint) => (
+                <button
+                  key={hint}
+                  type="button"
+                  className="home-ask-chip"
+                  disabled={Boolean(isAsking) || !onAsk}
+                  onClick={() => {
+                    if (!onAsk || isAsking) return
+                    onAsk(hint)
+                  }}
+                >
+                  {hint}
+                </button>
+              ))}
             </div>
           </div>
 
-          <div className="p-4 md:p-6">
+          {hasDraft && firstDocId && (
+            <div className="border-b-2 border-on-background bg-surface-container-low px-4 md:px-6 py-2 flex items-center justify-between flex-wrap gap-2">
+              <span className="text-xs text-on-surface-variant" style={{ fontFamily: 'var(--font-label)' }}>
+                Active draft on disk
+              </span>
+              <button
+                type="button"
+                onClick={() => onNavigate({ page: firstDocId })}
+                className="border-2 border-on-background bg-primary text-on-primary font-bold px-4 py-1 text-xs outset-button"
+                style={{ fontFamily: 'var(--font-label)' }}
+              >
+                Open Documents
+              </button>
+            </div>
+          )}
+
+          <div className="p-4 md:p-6 pb-6">
             <div className="flex items-center gap-2 mb-3">
               <span
                 className="text-xs font-bold tracking-widest text-on-surface-variant uppercase"
@@ -407,10 +330,28 @@ export function HomePage({ onNavigate }: HomePageProps) {
                 className="text-[11px] text-on-surface-variant"
                 style={{ fontFamily: 'var(--font-label)' }}
               >
-                Built-in phases + your own
+                {docTypes.length === 0
+                  ? 'Empty until you ask or add one'
+                  : `${docTypes.length} document${docTypes.length === 1 ? '' : 's'}`}
               </span>
             </div>
             <div className="grid grid-cols-2 md:grid-cols-3 gap-0 border-2 border-on-background">
+              {docTypes.length === 0 ? (
+                <div className="col-span-2 md:col-span-3 border border-on-background bg-surface-container-low p-6 text-center">
+                  <p
+                    className="text-sm text-on-surface-variant mb-1"
+                    style={{ fontFamily: 'var(--font-body)' }}
+                  >
+                    No documents yet.
+                  </p>
+                  <p
+                    className="text-[11px] text-on-surface-variant"
+                    style={{ fontFamily: 'var(--font-label)' }}
+                  >
+                    Use Ask Charter Ai above, or add one manually.
+                  </p>
+                </div>
+              ) : null}
               {docTypes.map((doc) => (
                 <div
                   key={doc.id}
@@ -434,30 +375,28 @@ export function HomePage({ onNavigate }: HomePageProps) {
                       className="text-[11px] font-semibold text-on-background/75"
                       style={{ fontFamily: 'var(--font-label)' }}
                     >
-                      {doc.builtin ? `Phase ${String(doc.number).padStart(2, '0')}` : 'Custom document'}
+                      Pipeline document
                     </p>
                   </button>
-                  {!doc.builtin ? (
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        setPendingDeleteDoc(doc)
-                      }}
-                      className="absolute top-1.5 right-1.5 w-5 h-5 flex items-center justify-center border border-on-background bg-white text-on-background hover:bg-error hover:text-on-primary text-[13px] leading-none"
-                      title={`Delete "${doc.title}"`}
-                      aria-label={`Delete ${doc.title}`}
-                    >
-                      ×
-                    </button>
-                  ) : null}
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      setPendingDeleteDoc(doc)
+                    }}
+                    className="absolute top-1.5 right-1.5 w-5 h-5 flex items-center justify-center border border-on-background bg-white text-on-background hover:bg-error hover:text-on-primary text-[13px] leading-none"
+                    title={`Delete "${doc.title}"`}
+                    aria-label={`Delete ${doc.title}`}
+                  >
+                    ×
+                  </button>
                 </div>
               ))}
               <button
                 type="button"
                 onClick={() => setShowNewDoc(true)}
                 className="border border-on-background p-4 bg-secondary-container hover:bg-surface-container-low transition-colors min-h-[110px] flex flex-col items-center justify-center text-center cursor-pointer"
-                title="Add a custom document to the pipeline"
+                title="Add a document to the pipeline"
               >
                 <span className="material-symbols-outlined text-primary mb-2 text-[28px]">add</span>
                 <span
@@ -469,118 +408,17 @@ export function HomePage({ onNavigate }: HomePageProps) {
               </button>
             </div>
           </div>
-
-          <div className="px-4 md:px-6 pb-6">
-            <div className="flex items-center gap-2 mb-3">
-              <span
-                className="text-xs font-bold tracking-widest text-on-surface-variant uppercase"
-                style={{ fontFamily: 'var(--font-label)' }}
-              >
-                Codebase Index
-              </span>
-              <div className="flex-1 h-px bg-on-background/30" />
-            </div>
-            <div className="border-2 border-on-background bg-surface-container-low p-3 inset-field">
-              {state.status === 'idle' && (
-                <div className="flex flex-wrap items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={startIndexing}
-                    className="border-2 border-on-background bg-primary text-on-primary font-bold px-4 py-1 text-xs outset-button"
-                    style={{ fontFamily: 'var(--font-label)' }}
-                  >
-                    Index Codebase
-                  </button>
-                  <button
-                    type="button"
-                    onClick={loadIndex}
-                    className="border-2 border-on-background bg-white text-on-background font-bold px-4 py-1 text-xs outset-button"
-                    style={{ fontFamily: 'var(--font-label)' }}
-                  >
-                    Load Cached
-                  </button>
-                </div>
-              )}
-
-              {state.status === 'indexing' && (
-                <div className="flex flex-col gap-2">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-bold text-primary uppercase" style={{ fontFamily: 'var(--font-label)' }}>
-                      {state.phase.replace(/-/g, ' ')}
-                    </span>
-                    <span className="text-xs text-on-surface-variant" style={{ fontFamily: 'var(--font-label)' }}>
-                      {Math.round(state.percent)}%
-                    </span>
-                  </div>
-                  <div className="w-full h-4 border-2 border-on-background inset-field p-[2px] bg-white">
-                    <div className="h-full bg-primary" style={{ width: `${state.percent}%` }} />
-                  </div>
-                </div>
-              )}
-
-              {state.status === 'done' && (
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="text-xs text-on-surface-variant mr-auto" style={{ fontFamily: 'var(--font-label)' }}>
-                    {state.summary.totalFiles} files · {state.summary.totalTypes} types
-                  </span>
-                  <button
-                    type="button"
-                    onClick={startIndexing}
-                    className="border-2 border-on-background bg-primary text-on-primary font-bold px-3 py-0.5 text-xs outset-button"
-                    style={{ fontFamily: 'var(--font-label)' }}
-                  >
-                    Re-index
-                  </button>
-                  <button
-                    type="button"
-                    onClick={reset}
-                    className="border-2 border-on-background bg-white font-bold px-3 py-0.5 text-xs outset-button"
-                    style={{ fontFamily: 'var(--font-label)' }}
-                  >
-                    Dismiss
-                  </button>
-                </div>
-              )}
-
-              {state.status === 'error' && (
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="text-xs text-red-700 font-bold mr-auto" style={{ fontFamily: 'var(--font-label)' }}>
-                    {state.message}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={reset}
-                    className="border-2 border-on-background bg-white font-bold px-3 py-0.5 text-xs outset-button"
-                    style={{ fontFamily: 'var(--font-label)' }}
-                  >
-                    Dismiss
-                  </button>
-                </div>
-              )}
-            </div>
-          </div>
         </div>
       </div>
 
       {pendingReset ? (
         <ConfirmDialog
-          title="Reset Version"
-          message={`Clear all documents in "${pendingReset.name}" back to blank? This can't be undone.`}
+          title="Reset Documents"
+          message="Clear all documents back to blank? This can't be undone."
           confirmLabel="Reset"
           danger
           onConfirm={confirmReset}
-          onCancel={() => setPendingReset(null)}
-        />
-      ) : null}
-
-      {pendingDelete ? (
-        <ConfirmDialog
-          title="Delete Version"
-          message={`Delete "${pendingDelete.name}" and all of its documents? This can't be undone.`}
-          confirmLabel="Delete"
-          danger
-          onConfirm={confirmDelete}
-          onCancel={() => setPendingDelete(null)}
+          onCancel={() => setPendingReset(false)}
         />
       ) : null}
 
@@ -591,7 +429,7 @@ export function HomePage({ onNavigate }: HomePageProps) {
       {pendingDeleteDoc ? (
         <ConfirmDialog
           title="Delete Document"
-          message={`Remove "${pendingDeleteDoc.name}" from the pipeline? Its saved content in every version will no longer be reachable.`}
+          message={`Remove "${pendingDeleteDoc.title}" from the pipeline? Its saved content will no longer be reachable.`}
           confirmLabel="Delete"
           danger
           onConfirm={confirmDeleteDoc}

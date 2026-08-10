@@ -5,7 +5,7 @@ import {
   getDefaultReactSlashMenuItems,
 } from '@blocknote/react'
 import { BlockNoteView } from '@blocknote/mantine'
-import type { Block } from '@blocknote/core'
+import { BlockNoteEditor, type Block, type PartialBlock } from '@blocknote/core'
 import '@blocknote/core/fonts/inter.css'
 import '@blocknote/mantine/style.css'
 import type { BlockNoteBlock } from '../../types/document'
@@ -28,6 +28,46 @@ interface DocumentCanvasProps {
   onEditorReady?: (editor: CanvasEditor | null) => void
 }
 
+const EMPTY_CONTENT: PartialBlock[] = [{ type: 'paragraph', content: '' }]
+
+function canCreateDocument(content: PartialBlock[]): boolean {
+  try {
+    const editor = BlockNoteEditor.create({ schema: canvasSchema, initialContent: content })
+    try {
+      editor._tiptapEditor?.destroy?.()
+    } catch {
+      /* ignore teardown */
+    }
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** Drop blocks that still crash BlockNote after sanitize (keeps the rest of the doc). */
+function safeInitialContent(blocks: BlockNoteBlock[]): PartialBlock[] {
+  const sanitized = sanitizeCanvasBlocks(blocks)
+  if (canCreateDocument(sanitized)) return sanitized
+
+  console.error('[DocumentCanvas] sanitized initialContent rejected; filtering blocks')
+
+  const kept: PartialBlock[] = []
+  for (const block of sanitized) {
+    const candidate = [...kept, block]
+    if (canCreateDocument(candidate.length > 0 ? candidate : EMPTY_CONTENT)) {
+      kept.push(block)
+      continue
+    }
+    const label = typeof block.type === 'string' ? block.type : 'block'
+    const stub: PartialBlock = { type: 'paragraph', content: `[Skipped invalid ${label}]` }
+    if (canCreateDocument([...kept, stub])) {
+      kept.push(stub)
+    }
+  }
+
+  return kept.length > 0 ? kept : EMPTY_CONTENT
+}
+
 function DocumentCanvasInner({
   initialBlocks,
   onChange,
@@ -39,7 +79,7 @@ function DocumentCanvasInner({
   const lastExternalRevision = useRef(0)
 
   const initialContent = useMemo(
-    () => sanitizeCanvasBlocks(initialBlocks),
+    () => safeInitialContent(initialBlocks),
     // Only for first mount — editor owns content after that.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
@@ -64,12 +104,12 @@ function DocumentCanvasInner({
     lastExternalRevision.current = externalRevision
     applyingExternal.current = true
     try {
-      const next = sanitizeCanvasBlocks(externalBlocks)
+      const next = safeInitialContent(externalBlocks)
       editor.replaceBlocks(editor.document, next)
     } catch (err) {
       console.error('[DocumentCanvas] replaceBlocks failed', err)
       try {
-        editor.replaceBlocks(editor.document, [{ type: 'paragraph', content: '' }])
+        editor.replaceBlocks(editor.document, EMPTY_CONTENT)
       } catch {
         /* ignore secondary failure — ErrorBoundary will catch render issues */
       }

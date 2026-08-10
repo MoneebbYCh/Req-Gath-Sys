@@ -1,6 +1,9 @@
+import { useEffect, useRef, useState } from 'react'
 import type { View } from '../../hooks/useViewState'
-import type { GateStatus } from '../../utils/validation'
-import { listDocumentTypes } from '../../data/documentTypes'
+import {
+  listPipelineDocumentTypes,
+  renameDocType,
+} from '../../data/documentTypes'
 import { BrandMark } from '../BrandMark'
 
 interface PipelineHeaderProps {
@@ -12,8 +15,8 @@ interface PipelineHeaderProps {
   currentPhaseId?: string
   /** Jump between phases from the header strip. */
   onNavigate?: (view: View) => void
-  /** @deprecated Unused — phases are no longer gated. */
-  formData?: unknown
+  /** Fired after a document is renamed (so the page masthead can refresh). */
+  onDocRenamed?: (id: string, name: string) => void
 }
 
 export function PipelineHeader({
@@ -23,7 +26,51 @@ export function PipelineHeader({
   saveLabel = 'Save Draft',
   currentPhaseId,
   onNavigate,
+  onDocRenamed,
 }: PipelineHeaderProps) {
+  const [listRev, setListRev] = useState(0)
+  const phases = listPipelineDocumentTypes()
+  void listRev
+
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [draftName, setDraftName] = useState('')
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    if (!editingId) return
+    inputRef.current?.focus()
+    inputRef.current?.select()
+  }, [editingId])
+
+  // Leave rename mode when switching documents.
+  useEffect(() => {
+    setEditingId(null)
+    setDraftName('')
+  }, [currentPhaseId])
+
+  const beginRename = (id: string, currentTitle: string) => {
+    setEditingId(id)
+    setDraftName(currentTitle)
+  }
+
+  const commitRename = () => {
+    if (!editingId) return
+    const id = editingId
+    const next = draftName.trim()
+    setEditingId(null)
+    if (!next) return
+    const current = listPipelineDocumentTypes().find((p) => p.id === id)
+    if (!current || current.title === next) return
+    renameDocType(id, next)
+    setListRev((n) => n + 1)
+    onDocRenamed?.(id, next)
+  }
+
+  const cancelRename = () => {
+    setEditingId(null)
+    setDraftName('')
+  }
+
   return (
     <header className="sticky top-0 w-full z-50 flex flex-col border-b-2 border-on-background bg-secondary-container">
       <div className="flex justify-between items-center px-6 py-2">
@@ -54,129 +101,72 @@ export function PipelineHeader({
           </button>
         </div>
       </div>
-      <nav className="flex w-full overflow-x-auto">
-        {listDocumentTypes().map((phase) => {
+      <nav className="flex w-full overflow-x-auto" aria-label="Pipeline documents">
+        {phases.map((phase) => {
           const active = phase.id === currentPhaseId
-          const canNavigate = Boolean(onNavigate)
+          const editing = editingId === phase.id
           const className = [
-            'flex-1 min-w-[140px] px-4 py-2 flex items-center justify-between border-r border-on-background transition-colors text-left',
+            'pipeline-doc-tab flex-1 min-w-[160px] px-3 py-2 flex items-center gap-2 border-r border-on-background transition-colors text-left',
             active
               ? 'bg-white text-on-background'
               : 'bg-secondary-container text-on-background hover:bg-surface-container-low',
-            canNavigate ? 'cursor-pointer' : 'cursor-default',
           ].join(' ')
 
-          const inner = (
-            <>
-              <span className="text-xs font-bold truncate" style={{ fontFamily: 'var(--font-label)' }}>
-                {phase.title}
-              </span>
-              <span className="material-symbols-outlined text-[16px]">
-                {active ? 'radio_button_checked' : 'radio_button_unchecked'}
-              </span>
-            </>
-          )
-
-          if (canNavigate) {
+          if (editing) {
             return (
-              <button
-                key={phase.id}
-                type="button"
-                className={className}
-                onClick={() => onNavigate?.({ page: phase.id })}
-              >
-                {inner}
-              </button>
+              <div key={phase.id} className={className}>
+                <input
+                  ref={inputRef}
+                  type="text"
+                  className="pipeline-doc-tab-input"
+                  value={draftName}
+                  aria-label="Document name"
+                  onChange={(e) => setDraftName(e.target.value)}
+                  onBlur={commitRename}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault()
+                      commitRename()
+                    } else if (e.key === 'Escape') {
+                      e.preventDefault()
+                      cancelRename()
+                    }
+                  }}
+                />
+                <span className="material-symbols-outlined text-[16px] shrink-0" aria-hidden>
+                  radio_button_checked
+                </span>
+              </div>
             )
           }
 
           return (
-            <span key={phase.id} className={className}>
-              {inner}
-            </span>
+            <div key={phase.id} className={className}>
+              <button
+                type="button"
+                className={[
+                  'pipeline-doc-tab-label flex-1 min-w-0 text-left truncate text-xs font-bold',
+                  active ? 'pipeline-doc-tab-label--editable cursor-text' : 'cursor-pointer',
+                ].join(' ')}
+                style={{ fontFamily: 'var(--font-label)' }}
+                onClick={() => {
+                  if (active) {
+                    beginRename(phase.id, phase.title)
+                    return
+                  }
+                  onNavigate?.({ page: phase.id })
+                }}
+                title={active ? 'Click to rename' : `Open ${phase.title}`}
+              >
+                {phase.title}
+              </button>
+              <span className="material-symbols-outlined text-[16px] shrink-0" aria-hidden>
+                {active ? 'radio_button_checked' : 'radio_button_unchecked'}
+              </span>
+            </div>
           )
         })}
       </nav>
     </header>
-  )
-}
-
-interface PipelineFooterProps {
-  gateStatus: GateStatus
-  onExportPdf: () => void
-  onSignOff: () => void
-  onNavigate?: (view: View) => void
-}
-
-function gateFooterLabel(status: GateStatus): { text: string; className: string } {
-  switch (status) {
-    case 'approved':
-      return { text: 'Gate Approved — Phase 1 Complete', className: 'text-green-700' }
-    case 'open':
-      return { text: 'Gate Open — Complete Section 8 Sign-off', className: 'text-primary' }
-    case 'needs-revision':
-      return { text: 'Gate — Needs Revision', className: 'text-error' }
-    case 'rejected':
-      return { text: 'Gate — Rejected', className: 'text-error' }
-    default:
-      return { text: 'Gate Review Required', className: 'text-error' }
-  }
-}
-
-export function PipelineFooter({ gateStatus, onExportPdf, onSignOff, onNavigate }: PipelineFooterProps) {
-  const gateLabel = gateFooterLabel(gateStatus)
-
-  return (
-    <footer className="sticky bottom-0 w-full z-50 bg-surface-container-highest border-t-2 border-on-background flex justify-between items-center px-6 py-1">
-      <div className="flex items-center gap-4">
-        <span
-          className="text-[11px] text-on-background font-bold uppercase tracking-wider"
-          style={{ fontFamily: 'var(--font-label)' }}
-        >
-          Internal Engineering Tool
-        </span>
-        <span className="text-on-surface-variant text-[11px]">|</span>
-        <span
-          className={`text-[11px] font-bold ${gateLabel.className}`}
-          style={{ fontFamily: 'var(--font-label)' }}
-        >
-          {gateLabel.text}
-        </span>
-      </div>
-      <div className="flex gap-6 items-center">
-        {gateStatus === 'approved' && onNavigate && (
-          <button
-            type="button"
-            onClick={() => onNavigate({ page: 'prd' })}
-            className="text-[11px] text-on-primary bg-primary border-2 border-on-background font-bold px-3 py-0.5 outset-button"
-            style={{ fontFamily: 'var(--font-label)' }}
-          >
-            Proceed to PRD →
-          </button>
-        )}
-        <button
-          type="button"
-          onClick={onExportPdf}
-          className="text-[11px] text-on-surface-variant hover:text-primary transition-colors bg-transparent border-0 cursor-pointer"
-          style={{ fontFamily: 'var(--font-label)' }}
-        >
-          Generate PDF
-        </button>
-        <button
-          type="button"
-          onClick={onSignOff}
-          className="text-[11px] text-on-surface-variant hover:text-primary transition-colors font-bold underline bg-transparent border-0 cursor-pointer"
-          style={{ fontFamily: 'var(--font-label)' }}
-        >
-          Sign-off
-        </button>
-        <div className="flex items-center gap-2 border-l border-on-background pl-4">
-          <span className="w-2 h-2 rounded-full bg-green-600" />
-          <span className="text-[11px] text-on-background" style={{ fontFamily: 'var(--font-label)' }}>
-            SYS_READY
-          </span>
-        </div>
-      </div>
-    </footer>
   )
 }

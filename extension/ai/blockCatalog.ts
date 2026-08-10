@@ -26,7 +26,9 @@ export const CANVAS_BLOCK_CATALOG = `CUSTOM BLOCKS:
    { "type": "diagram", "props": { "code": "flowchart TD\\n  A[Users] --> B[Portal]\\n  B --> C[APIs]", "title": "…", "source": "llm" } }
    YOU author the Mermaid after reasoning — from codebase tools when a workspace exists, or from chat/requirements when it does not.
    Prefer small diagrams (≤ ~15–20 nodes). Use flowchart/graph/sequenceDiagram with simple node ids (no spaces in ids).
-   Put labels in [brackets]. Avoid HTML, classDef, click, and style directives unless essential.
+   Put labels in [brackets]. If a label contains { } / < > | # or path-like text, use quotes: A["GET /universities/{slug}"].
+   Never put bare { } inside unquoted labels — Mermaid treats {} as diamond nodes.
+   Always use type "diagram" (never "mermaid"). Avoid HTML, classDef, click, and style directives unless essential.
    Before finishing a document that includes a diagram, call the validate_mermaid tool and use the returned block.
    Do not use fixed templates or invent a portal/ERP overview unless that is actually what the user described.
 

@@ -1,5 +1,5 @@
 import { useMemo } from 'react'
-import { templateOutline, type CharterTemplate } from '../../data/charterTemplates'
+import { templateOutline, type CharterTemplate } from '../../data/docTemplates'
 
 interface TemplateGalleryProps {
   documentLabel: string

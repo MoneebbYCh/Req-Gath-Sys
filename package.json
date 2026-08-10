@@ -26,7 +26,7 @@
       },
       {
         "command": "charter-ai.indexCodebase",
-        "title": "Charter Ai: Index Codebase"
+        "title": "Charter Ai: Update Semantic Index"
       },
       {
         "command": "charter-ai.configureApiKey",
@@ -35,10 +35,6 @@
       {
         "command": "charter-ai.configureEmbeddings",
         "title": "Charter Ai: Configure Embeddings"
-      },
-      {
-        "command": "charter-ai.insertDependencyDiagram",
-        "title": "Charter Ai: Insert Module Dependency Diagram"
       }
     ],
     "menus": {
@@ -57,9 +53,6 @@
         },
         {
           "command": "charter-ai.configureEmbeddings"
-        },
-        {
-          "command": "charter-ai.insertDependencyDiagram"
         }
       ]
     }
@@ -77,11 +70,8 @@
     "@blocknote/core": "^0.52.1",
     "@blocknote/mantine": "^0.52.1",
     "@blocknote/react": "^0.52.1",
-    "@lubab/madar": "^0.27.9",
     "@mantine/core": "^9.4.2",
     "@mantine/hooks": "^9.4.2",
-    "jspdf": "^4.2.1",
-    "jspdf-autotable": "^5.0.8",
     "mermaid": "^11.16.0",
     "openai": "^4.104.0",
     "react": "^19.2.6",

@@ -2,10 +2,8 @@
 
 export type BlockNoteBlock = Record<string, unknown>
 
-/** Stable IDs for later traceability across phases. */
+/** Stable IDs for later traceability (templateId, shortName, etc.). */
 export interface CharterAnchors {
-  businessCaseId?: string
-  objectivesId?: string
   shortName?: string
   /** Which starting template the document was created from ('custom' for a blank start). */
   templateId?: string
@@ -18,9 +16,6 @@ export interface CanvasDocument {
   blocks: BlockNoteBlock[]
   anchors?: CharterAnchors
 }
-
-/** @deprecated Use CANVAS_PHASES['project-charter'].storageKey */
-export const CHARTER_DOC_STORAGE_KEY = 'charter-ai-charter-doc-v1'
 
 export function emptyCanvasDocument(): CanvasDocument {
   return {

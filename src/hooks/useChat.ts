@@ -19,7 +19,7 @@ function nextId(): string {
 const WELCOME: ChatMessage = {
   id: nextId(),
   role: 'assistant',
-  text: `Hello! I'm your ${BRAND_NAME} assistant. I can help draft charter, PRD, system design, and later-phase canvases — configure your API key first (command palette: ${BRAND_NAME}: Configure API Key), then ask away!`,
+  text: `Hello! I'm your ${BRAND_NAME} assistant. From Home I can read this codebase and generate a document pipeline for the project. On a document page I can draft the canvas. Configure your API key first (command palette: ${BRAND_NAME}: Configure API Key), then ask away!`,
   timestamp: Date.now(),
 }
 
