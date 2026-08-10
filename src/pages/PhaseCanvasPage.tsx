@@ -15,7 +15,7 @@ import {
   saveUserTemplate,
   type CharterTemplate,
 } from '../data/docTemplates'
-import { storageKeyFor, TEMPLATE_TUTORIAL_BASE_KEY } from '../utils/versions'
+import { storageKeyFor, TEMPLATE_TUTORIAL_BASE_KEY } from '../utils/workspaceScope'
 
 interface PhaseCanvasPageProps {
   phaseId: string
@@ -27,7 +27,6 @@ export function PhaseCanvasPage({ phaseId, onNavigate, goHome }: PhaseCanvasPage
   const {
     meta,
     doc,
-    versionId,
     blocks,
     setBlocks,
     applyExternalDocument,
@@ -40,7 +39,7 @@ export function PhaseCanvasPage({ phaseId, onNavigate, goHome }: PhaseCanvasPage
     externalBlocks,
   } = usePhaseDocument(phaseId)
 
-  const tutorialKey = storageKeyFor(TEMPLATE_TUTORIAL_BASE_KEY, versionId)
+  const tutorialKey = storageKeyFor(TEMPLATE_TUTORIAL_BASE_KEY)
 
   const [editor, setEditor] = useState<CanvasEditor | null>(null)
   const [toolsCollapsed, setToolsCollapsed] = useState(false)
@@ -55,17 +54,16 @@ export function PhaseCanvasPage({ phaseId, onNavigate, goHome }: PhaseCanvasPage
   const [showTutorial, setShowTutorial] = useState(false)
   const autoOpenedRef = useRef(false)
 
-  // Every document type gets the Templates tab; curated templates only exist
-  // for the charter, but any type can be seeded from a saved template or blank.
+  // Every document type gets the Templates tab (blank + user-saved).
   const templatesEnabled = true
   // Templates other than the blank "Build from scratch" option.
-  const hasCuratedTemplates = templateOptions.some((t) => !t.custom)
+  const hasSavedTemplates = templateOptions.some((t) => !t.custom)
   const templateId = doc.anchors?.templateId
   const hasContent = useMemo(() => documentHasContent(doc), [doc])
 
-  // On first open of an untouched doc that has real templates, show the gallery.
+  // On first open of an untouched doc that already has saved templates, show the gallery.
   const needsInitialTemplate =
-    templatesEnabled && hasCuratedTemplates && ready && !hasContent && !templateId
+    templatesEnabled && hasSavedTemplates && ready && !hasContent && !templateId
 
   useEffect(() => {
     autoOpenedRef.current = false

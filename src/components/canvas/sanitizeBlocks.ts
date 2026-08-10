@@ -29,6 +29,66 @@ const BUILTIN_TYPES = new Set([
 
 const ALLOWED_TYPES = new Set([...CUSTOM_TYPES, ...BUILTIN_TYPES])
 
+/** LLM often invents these type names — map them to our real custom blocks. */
+const TYPE_ALIASES: Record<string, string> = {
+  mermaid: 'diagram',
+  mermaidDiagram: 'diagram',
+  mermaidBlock: 'diagram',
+  flowchart: 'diagram',
+  architectureDiagram: 'diagram',
+  diagramBlock: 'diagram',
+}
+
+/**
+ * Pull Mermaid source out of the many shapes LLMs invent.
+ * Returns { code, title } when found.
+ */
+function extractMermaidFromBlock(
+  block: Record<string, unknown>,
+  props: Record<string, unknown>,
+): { code: string; title: string } {
+  let code = ''
+  let title = typeof props.title === 'string' ? props.title : ''
+
+  const tryString = (v: unknown) =>
+    typeof v === 'string' && v.trim() ? v.trim() : ''
+
+  code =
+    tryString(props.code) ||
+    tryString(props.mermaid) ||
+    tryString(props.sourceCode) ||
+    tryString(props.diagram)
+  // NOTE: do not use props.source — that is provenance ("llm" | "code-index"), not Mermaid.
+
+  // content: "flowchart TD…" or content: { diagram, code, title, mermaid }
+  const content = block.content
+  if (!code && typeof content === 'string') {
+    code = content.trim()
+  } else if (!code && content && typeof content === 'object' && !Array.isArray(content)) {
+    const c = content as Record<string, unknown>
+    code =
+      tryString(c.diagram) ||
+      tryString(c.code) ||
+      tryString(c.mermaid) ||
+      tryString(c.source) ||
+      tryString(c.sourceCode)
+    if (!title) title = tryString(c.title)
+  }
+
+  if (!code) {
+    code = extractPlainText(content)
+  }
+
+  // Strip ```mermaid fences
+  const fence = code.match(/^```(?:mermaid)?\s*([\s\S]*?)\s*```$/i)
+  if (fence) code = fence[1].trim()
+
+  // <br/> in labels often breaks strict sanitizer — use Mermaid-friendly breaks
+  code = code.replace(/<br\s*\/?>/gi, '<br/>')
+
+  return { code, title }
+}
+
 const NONE_CONTENT_TYPES = new Set([
   'kpiGrid',
   'scopeBounds',
@@ -80,6 +140,10 @@ export function sanitizeCanvasBlocks(blocks: BlockNoteBlock[]): PartialBlock[] {
 
     const block = { ...raw } as Record<string, unknown>
     let type = String(block.type || 'paragraph')
+    if (TYPE_ALIASES[type]) {
+      type = TYPE_ALIASES[type]
+      block.type = type
+    }
 
     if (!ALLOWED_TYPES.has(type)) {
       const text = extractPlainText(block.content) || `[Unsupported block: ${type}]`
@@ -148,20 +212,21 @@ export function sanitizeCanvasBlocks(blocks: BlockNoteBlock[]): PartialBlock[] {
     }
 
     if (type === 'diagram') {
-      // LLM may put Mermaid in content or as `mermaid` / `source` props.
-      if (typeof props.code !== 'string' || !props.code.trim()) {
-        const fromAlt =
-          (typeof props.mermaid === 'string' && props.mermaid) ||
-          (typeof props.sourceCode === 'string' && props.sourceCode) ||
-          extractPlainText(block.content)
-        props.code =
-          fromAlt.trim() ||
-          'graph TD\n  A[Start] --> B[End]'
+      const extracted = extractMermaidFromBlock(block, props)
+      if (extracted.code) {
+        props.code = extracted.code
+      } else if (typeof props.code !== 'string' || !props.code.trim()) {
+        // Keep a visible stub only when nothing was recoverable.
+        props.code = 'graph TD\n  A[Start] --> B[End]'
       }
+      if (extracted.title) props.title = extracted.title
+      else if (props.title == null) props.title = ''
+      if (props.source !== 'code-index') props.source = 'llm'
       delete props.mermaid
       delete props.sourceCode
-      if (props.title == null) props.title = ''
-      if (props.source !== 'code-index') props.source = 'llm'
+      delete props.diagram
+      // Object content is not valid for BlockNote diagram (content: 'none').
+      delete block.content
     }
 
     // Drop unknown prop keys that are still arrays/objects (BlockNote propSchema is scalars/strings).

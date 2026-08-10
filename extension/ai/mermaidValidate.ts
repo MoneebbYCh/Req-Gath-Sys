@@ -59,7 +59,48 @@ export function normalizeMermaidSource(code: string): string {
     s = s.replace(/\\n/g, '\n').replace(/\\t/g, '\t')
   }
 
-  return s.trim()
+  return sanitizeMermaidLabels(s.trim())
+}
+
+/**
+ * Mermaid treats bare `{}` as diamond nodes. Quote labels that contain
+ * shape/punctuation specials (e.g. GET /universities/{slug}).
+ */
+export function sanitizeMermaidLabels(code: string): string {
+  if (!code) return code
+
+  const labelSpecials = /[{}<>|#;]/
+
+  const quoteIfNeeded = (label: string): string => {
+    const trimmed = label.trim()
+    if (!trimmed) return '""'
+    if (
+      (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+      (trimmed.startsWith("'") && trimmed.endsWith("'"))
+    ) {
+      return trimmed
+    }
+    if (!labelSpecials.test(trimmed) && !/\//.test(trimmed)) {
+      return trimmed
+    }
+    const escaped = trimmed.replace(/\\/g, '\\\\').replace(/"/g, "'")
+    return `"${escaped}"`
+  }
+
+  let out = code.replace(
+    /(\b[A-Za-z][\w]*)\[\s*(?!")([^\]]*?)\]/g,
+    (_m, id: string, label: string) => `${id}[${quoteIfNeeded(label)}]`,
+  )
+
+  out = out.replace(
+    /(\|--?>?|--)\s*\|(?!\s*")([^|]*?)\|/g,
+    (_m, arrow: string, label: string) => {
+      if (!labelSpecials.test(label) && !/\//.test(label)) return `${arrow}|${label}|`
+      return `${arrow}|${quoteIfNeeded(label)}|`
+    },
+  )
+
+  return out
 }
 
 /** Strip %% comments and blank lines to find the diagram header. */

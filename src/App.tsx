@@ -3,7 +3,10 @@ import { HomePage } from './pages/HomePage'
 import { ProfilePage } from './pages/ProfilePage'
 import { PhaseCanvasPage } from './pages/PhaseCanvasPage'
 import { CRTMonitor } from './components/layout/CRTMonitor'
-import { isDocumentTypeId, hydrateCustomTypesFromDisk } from './data/documentTypes'
+import {
+  isDocumentTypeId,
+  applyCustomTypesFromDisk,
+} from './data/documentTypes'
 import { getVscodeApi } from './utils/vscodeApi'
 import {
   getWorkspaceId,
@@ -12,14 +15,13 @@ import {
 import { useChat } from './hooks/useChat'
 import { ChatPanel } from './components/chat/ChatPanel'
 import { ChatToggleButton } from './components/chat/ChatToggleButton'
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 
 function App() {
   const vscode = getVscodeApi()
   // Wait until we know which folder we're in (VS Code) so localStorage is scoped first.
   const [scopeReady, setScopeReady] = useState(!vscode)
   const [workspaceKey, setWorkspaceKey] = useState(() => getWorkspaceId() || 'local')
-  const [, setDocTypesRev] = useState(0)
 
   useEffect(() => {
     if (!vscode) return
@@ -31,11 +33,6 @@ function App() {
         setScopeReady(true)
         // Load doc types for *this* folder after scope is set.
         vscode.postMessage({ type: 'loadDocTypes' })
-      }
-      if (msg?.type === 'loadDocTypes') {
-        if (hydrateCustomTypesFromDisk(msg.data)) {
-          setDocTypesRev((n) => n + 1)
-        }
       }
     }
     window.addEventListener('message', handler)
@@ -59,13 +56,46 @@ function App() {
 
 function AppShell() {
   const { view, navigate, goHome } = useViewState()
+  // Home (and profile) use the orchestrator agent — can generate_pipeline.
   const chatPhase =
-    view.page === 'home' || view.page === 'profile' ? 'project-charter' : view.page
+    view.page === 'home' || view.page === 'profile' ? 'home' : view.page
   const chat = useChat(chatPhase)
+  const [docTypesRev, setDocTypesRev] = useState(0)
+
+  useEffect(() => {
+    const handler = (event: MessageEvent) => {
+      const msg = event.data
+      if (msg?.type === 'loadDocTypes') {
+        const mode = msg.mode === 'replace' ? 'replace' : 'merge'
+        if (applyCustomTypesFromDisk(msg.data, mode) || mode === 'replace') {
+          setDocTypesRev((n) => n + 1)
+        }
+      }
+    }
+    window.addEventListener('message', handler)
+    return () => window.removeEventListener('message', handler)
+  }, [])
+
+  const askFromHome = useCallback(
+    (text: string) => {
+      const trimmed = text.trim()
+      if (!trimmed) return
+      if (!chat.isOpen) chat.toggleOpen()
+      chat.sendMessage(trimmed)
+    },
+    [chat.isOpen, chat.toggleOpen, chat.sendMessage],
+  )
 
   const renderPage = () => {
     if (view.page === 'home') {
-      return <HomePage onNavigate={navigate} />
+      return (
+        <HomePage
+          onNavigate={navigate}
+          onAsk={askFromHome}
+          isAsking={chat.isTyping}
+          docTypesRev={docTypesRev}
+        />
+      )
     }
     if (view.page === 'profile') {
       return <ProfilePage onNavigate={navigate} goHome={goHome} />
@@ -73,7 +103,14 @@ function AppShell() {
     if (isDocumentTypeId(view.page)) {
       return <PhaseCanvasPage phaseId={view.page} onNavigate={navigate} goHome={goHome} />
     }
-    return <HomePage onNavigate={navigate} />
+    return (
+      <HomePage
+        onNavigate={navigate}
+        onAsk={askFromHome}
+        isAsking={chat.isTyping}
+        docTypesRev={docTypesRev}
+      />
+    )
   }
 
   return (

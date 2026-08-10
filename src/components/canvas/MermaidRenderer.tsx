@@ -1,5 +1,6 @@
 import { useEffect, useId, useState } from 'react'
 import mermaid from 'mermaid'
+import { sanitizeMermaidLabels } from '../../utils/mermaidSanitize'
 
 let mermaidReady = false
 
@@ -28,7 +29,7 @@ export function MermaidRenderer({ code, className }: MermaidRendererProps) {
   useEffect(() => {
     let cancelled = false
     const run = async () => {
-      const source = (code || '').trim()
+      const source = sanitizeMermaidLabels((code || '').trim())
       if (!source) {
         setSvg(null)
         setError('Empty diagram')

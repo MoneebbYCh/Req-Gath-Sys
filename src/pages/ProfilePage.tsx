@@ -102,11 +102,11 @@ export function ProfilePage({ onNavigate, goHome }: ProfilePageProps) {
                 </div>
                 <button
                   type="button"
-                  onClick={() => onNavigate({ page: 'project-charter' })}
+                  onClick={() => onNavigate({ page: 'home' })}
                   className="w-full border-2 border-on-background bg-primary text-on-primary font-bold py-2 text-xs outset-button"
                   style={{ fontFamily: 'var(--font-label)' }}
                 >
-                  Open Charter →
+                  Back to Home →
                 </button>
               </div>
             </aside>

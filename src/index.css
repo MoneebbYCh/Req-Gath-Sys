@@ -107,6 +107,73 @@ html {
   color: #5f5e5a;
 }
 
+.home-ask-section {
+  background: var(--color-surface-container-low);
+}
+
+.home-ask-bar {
+  display: flex;
+  gap: 0;
+  border: 2px solid var(--color-on-background);
+  background: #fff;
+  box-shadow: 2px 2px 0 0 rgba(0, 0, 0, 1);
+}
+
+.home-ask-input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  padding: 12px 14px;
+  font-family: var(--font-body);
+  font-size: 14px;
+  color: var(--color-on-background);
+  background: transparent;
+}
+
+.home-ask-input:disabled {
+  opacity: 0.6;
+}
+
+.home-ask-input::placeholder {
+  color: var(--color-on-surface-variant);
+  opacity: 0.75;
+}
+
+.home-ask-submit {
+  flex-shrink: 0;
+  border-left: 2px solid var(--color-on-background) !important;
+  border-radius: 0;
+  box-shadow: none !important;
+}
+
+.home-ask-hints {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.home-ask-chip {
+  border: 1px solid var(--color-on-background);
+  background: #fff;
+  color: var(--color-on-background);
+  font-family: var(--font-label);
+  font-size: 11px;
+  padding: 4px 8px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.home-ask-chip:hover:not(:disabled) {
+  background: var(--color-secondary-container);
+}
+
+.home-ask-chip:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
 /* Quirky retro brand mark */
 
 .brand-mark {

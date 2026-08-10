@@ -1,8 +1,6 @@
-import { buildGroundedContext } from './codeContext'
-import { getFieldGuide } from './fieldGuides'
-import { CANVAS_BLOCK_CATALOG } from './blockCatalog'
 import { callLlm, type ChatMessage, type LlmConfig } from './llmClient'
 import { runAgentLoop } from './agentLoop'
+import { normalizeDocumentBlocks } from './normalizeDocumentBlocks'
 import type { EmbeddingConfig } from './embeddings'
 import {
   extractDiagramCodes,
@@ -12,62 +10,18 @@ import {
 import {
   docLabelFor,
   loadConfig,
+  loadDocTypes,
   loadForm,
   resolveEmbeddingSettings,
   saveForm,
 } from '../formStateManager'
 import { CodeIndexer } from '../codeIndexer'
 
-const PHASE_LABELS: Record<string, string> = {
-  'project-charter': 'Project Charter',
-  prd: 'Product Requirements Document (PRD)',
-  'system-design': 'System Design',
-  dev: 'Development notes',
-  qa: 'QA / verification',
-  'post-dev': 'Post Dev / handover',
-}
-
-function canvasSystemPrompt(phase: string, label?: string): string {
-  const resolvedLabel = label || PHASE_LABELS[phase] || phase
-  const charterExtra =
-    phase === 'project-charter'
-      ? `
-CHARTER-SPECIFIC RULES:
-- Dual framing: formal authorization + soft agreement on scope/timeline/budget.
-- Business Case FIRST before objectives; measurable objectives gate (number/date/binary).
-- Return anchors: { "businessCaseId", "objectivesId", "shortName" } when drafting.
-- Keep ≤ ~1500–2000 words (~5 pages).
-`
-      : `
-PHASE RULES:
-- Follow the document guidance for this phase.
-- Prefer custom blocks over long prose; keep decision-dense.
-- When useful, return "anchors" for stable cross-phase IDs (shortName, requirement ids, etc.).
-`
-
-  return `You are drafting the ${resolvedLabel} as a BlockNote canvas document for Charter Ai.
-Help the user elicit and write a clear, usable document for this pipeline phase.
-
-HARD CONSTRAINTS:
-- Prefer custom blocks over long prose.
-- You MUST respond with a single JSON object and nothing else (no markdown fences).
-${charterExtra}
-Response shape:
-{
-  "message": "What you changed + 1–3 sharp follow-ups if needed",
-  "anchors": { /* optional stable ids */ },
-  "document": [ /* full BlockNote block array, or null if Q&A only */ ]
-}
-
-${CANVAS_BLOCK_CATALOG}
-
-If the user only asks a question and no document change is needed, set "document": null.
-Always return valid JSON with "message"; include "document" (and "anchors" when useful) when drafting/updating.`
-}
-
-// Every pipeline document (built-in or custom) is a BlockNote canvas.
+// Document canvases — not home/profile orchestrator modes.
 function isCanvasPhase(phase: string): boolean {
-  return typeof phase === 'string' && phase.trim().length > 0
+  const p = typeof phase === 'string' ? phase.trim() : ''
+  if (!p || p === 'home' || p === 'profile') return false
+  return true
 }
 
 function emptyCanvasDoc() {
@@ -106,128 +60,14 @@ function normalizeCanvasDoc(data: unknown): {
 async function loadPhaseDocument(
   workspaceRoot: string,
   phase: string,
-  version?: string,
 ): Promise<unknown | null> {
   if (!isCanvasPhase(phase)) return null
-  return loadForm(workspaceRoot, phase, version)
-}
-
-export async function buildMessages(
-  text: string,
-  phase: string,
-  workspaceRoot: string,
-  embedCfg: EmbeddingConfig,
-  version?: string,
-): Promise<ChatMessage[]> {
-  const fieldGuide = getFieldGuide(phase)
-  const customLabel = await docLabelFor(workspaceRoot, phase)
-  const formData = await loadPhaseDocument(workspaceRoot, phase, version)
-  const current = JSON.stringify(normalizeCanvasDoc(formData), null, 2)
-  const codeContext = await buildGroundedContext(workspaceRoot, text, embedCfg)
-
-  const parts = [`USER: ${text}`, '']
-
-  if (fieldGuide) {
-    parts.push('Document guidance:', fieldGuide, '')
-  }
-
-  parts.push('CURRENT DOCUMENT (BlockNote JSON):', '```json', current, '```')
-
-  if (codeContext) parts.push('', codeContext)
-
-  return [
-    { role: 'system', content: canvasSystemPrompt(phase, customLabel ?? undefined) },
-    { role: 'user', content: parts.join('\n') },
-  ]
-}
-
-export function parseResponse(text: string): {
-  message: string
-  updates: Record<string, unknown> | null
-  document: unknown[] | null
-  anchors: Record<string, string> | null
-} {
-  let trimmed = text.trim()
-  if (!trimmed) {
-    return { message: 'No response.', updates: null, document: null, anchors: null }
-  }
-
-  const fenceMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/)
-  if (fenceMatch) {
-    trimmed = fenceMatch[1].trim()
-  }
-
-  if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
-    try {
-      const parsed = JSON.parse(trimmed)
-      if (parsed && typeof parsed === 'object' && typeof parsed.message === 'string') {
-        const updates = parsed.updates
-        const document = parsed.document
-        const anchorsRaw = parsed.anchors
-
-        let nextUpdates: Record<string, unknown> | null = null
-        if (
-          updates &&
-          typeof updates === 'object' &&
-          !Array.isArray(updates) &&
-          Object.keys(updates).length > 0
-        ) {
-          nextUpdates = updates as Record<string, unknown>
-        }
-
-        let nextDocument: unknown[] | null = null
-        if (Array.isArray(document) && document.length > 0) {
-          nextDocument = document
-        }
-
-        let nextAnchors: Record<string, string> | null = null
-        if (anchorsRaw && typeof anchorsRaw === 'object' && !Array.isArray(anchorsRaw)) {
-          nextAnchors = {}
-          for (const [k, v] of Object.entries(anchorsRaw as Record<string, unknown>)) {
-            if (typeof v === 'string' && v.trim()) nextAnchors[k] = v.trim()
-          }
-          if (Object.keys(nextAnchors).length === 0) nextAnchors = null
-        }
-
-        return {
-          message: parsed.message,
-          updates: nextUpdates,
-          document: nextDocument,
-          anchors: nextAnchors,
-        }
-      }
-    } catch {
-      // fall through
-    }
-  }
-
-  return { message: trimmed, updates: null, document: null, anchors: null }
-}
-
-export function deepMerge(target: Record<string, unknown>, updates: Record<string, unknown>): void {
-  for (const [dotPath, value] of Object.entries(updates)) {
-    const keys = dotPath.split('.')
-    let current = target
-    for (const key of keys.slice(0, -1)) {
-      const existing = current[key]
-      if (
-        existing === null ||
-        existing === undefined ||
-        typeof existing !== 'object' ||
-        Array.isArray(existing)
-      ) {
-        current[key] = {}
-      }
-      current = current[key] as Record<string, unknown>
-    }
-    current[keys[keys.length - 1]] = value
-  }
+  return loadForm(workspaceRoot, phase)
 }
 
 export interface ChatReload {
-  type: 'load_canvas' | 'load_charter' | 'load_prd' | 'load_form'
+  type: 'load_canvas'
   data: unknown
-  charterData?: unknown
   phase?: string
 }
 
@@ -244,9 +84,10 @@ export interface ProcessChatArgs {
   apiKey: string
   provider?: string | null
   model?: string | null
-  version?: string
   /** Interim UX status (e.g. "Updating code index…"). Pass null to clear. */
   onStatus?: (text: string | null) => void
+  /** Fired when generate_pipeline updates doc-types.json. */
+  onDocTypesChanged?: (data: unknown[], mode: 'merge' | 'replace') => void
 }
 
 /**
@@ -282,7 +123,16 @@ async function ensureFreshEmbeddings(
 }
 
 export async function processChat(args: ProcessChatArgs): Promise<ChatResult> {
-  const { text, phase, workspaceRoot, apiKey, provider, model, version, onStatus } = args
+  const {
+    text,
+    phase,
+    workspaceRoot,
+    apiKey,
+    provider,
+    model,
+    onStatus,
+    onDocTypesChanged,
+  } = args
 
   const config = await loadConfig(workspaceRoot)
   const llmSettings = config.llm ?? { provider: 'deepseek', model: null }
@@ -307,13 +157,16 @@ export async function processChat(args: ProcessChatArgs): Promise<ChatResult> {
   let fixMessages: ChatMessage[]
 
   // Always use the agentic tool loop so the model can actually read the open workspace.
-  const fieldGuide = getFieldGuide(phase)
-  const customLabel = await docLabelFor(workspaceRoot, phase)
-  const currentDocJson = JSON.stringify(
-    normalizeCanvasDoc(await loadPhaseDocument(workspaceRoot, phase, version)),
-    null,
-    2,
-  )
+  const fieldGuide = ''
+  const customLabel = phase === 'home' ? null : await docLabelFor(workspaceRoot, phase)
+  const currentDocJson =
+    phase === 'home'
+      ? 'null'
+      : JSON.stringify(
+          normalizeCanvasDoc(await loadPhaseDocument(workspaceRoot, phase)),
+          null,
+          2,
+        )
   const result = await runAgentLoop({
     text,
     phase,
@@ -323,31 +176,51 @@ export async function processChat(args: ProcessChatArgs): Promise<ChatResult> {
     llmConfig,
     embedCfg,
     currentDocJson,
+    onDocTypesChanged,
   })
   replyText = result.message
   document = result.document
   anchors = result.anchors
   fixMessages = result.messages
+  const targetDoc = result.targetDoc
 
   let formUpdated = false
   let reload: ChatReload | null = null
 
-  if (isCanvasPhase(phase) && document) {
+  // Resolve where to save: open canvas phase, or Home → targetDoc name/id.
+  let savePhase: string | null = isCanvasPhase(phase) ? phase : null
+  if (!savePhase && document && targetDoc) {
+    const resolved = await resolvePipelineDocTarget(workspaceRoot, targetDoc)
+    if (resolved) {
+      savePhase = resolved.id
+    } else {
+      replyText = `${replyText}\n\n(Could not save the draft — no pipeline doc matched "${targetDoc}". Call list_pipeline and use an exact id or name.)`
+    }
+  } else if (!savePhase && document && !targetDoc) {
+    replyText = `${replyText}\n\n(Draft was not saved — from Home you must set "targetDoc" to the document id or name, or open that document first.)`
+  }
+
+  if (savePhase && document) {
+    const normalizedDoc = normalizeDocumentBlocks(document)
     const { blocks: validatedBlocks, notes } = await validateAndFixDiagrams(
-      document,
+      normalizedDoc,
       llmConfig,
       fixMessages,
     )
-    const existing = normalizeCanvasDoc(await loadPhaseDocument(workspaceRoot, phase, version))
+    const existing = normalizeCanvasDoc(await loadPhaseDocument(workspaceRoot, savePhase))
     const saved = {
       version: 1 as const,
       kind: 'blocknote' as const,
       blocks: validatedBlocks,
       anchors: anchors ?? existing.anchors ?? {},
     }
-    await saveForm(workspaceRoot, phase, saved, version)
-    reload = { type: 'load_canvas', phase, data: saved }
+    await saveForm(workspaceRoot, savePhase, saved)
+    reload = { type: 'load_canvas', phase: savePhase, data: saved }
     formUpdated = true
+    if (phase === 'home' && targetDoc) {
+      const label = (await docLabelFor(workspaceRoot, savePhase)) || savePhase
+      replyText = `${replyText}\n\n(Saved to “${label}” — open that tile on Home to view it.)`
+    }
     if (notes.length) {
       return {
         message: `${replyText}\n\n(${notes.join(' ')})`,
@@ -362,6 +235,28 @@ export async function processChat(args: ProcessChatArgs): Promise<ChatResult> {
     form_updated: formUpdated,
     reload,
   }
+}
+
+/** Match targetDoc to a custom (or built-in) pipeline id by id or display name. */
+async function resolvePipelineDocTarget(
+  workspaceRoot: string,
+  target: string,
+): Promise<{ id: string; name: string } | null> {
+  const needle = target.trim().toLowerCase()
+  if (!needle) return null
+
+  const types = await loadDocTypes(workspaceRoot)
+  for (const raw of types) {
+    if (!raw || typeof raw !== 'object') continue
+    const id = typeof (raw as { id?: unknown }).id === 'string' ? (raw as { id: string }).id : ''
+    const name =
+      typeof (raw as { name?: unknown }).name === 'string' ? (raw as { name: string }).name : ''
+    if (!id) continue
+    if (id.toLowerCase() === needle || name.toLowerCase() === needle) {
+      return { id, name: name || id }
+    }
+  }
+  return null
 }
 
 const DIAGRAM_FIX_RETRIES = 2

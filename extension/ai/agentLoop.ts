@@ -5,14 +5,6 @@ import type { EmbeddingConfig } from './embeddings'
 import { runTool, TOOL_CATALOG } from './tools'
 
 const MAX_ITERS = 8
-const PHASE_LABELS: Record<string, string> = {
-  'project-charter': 'Project Charter',
-  prd: 'Product Requirements Document (PRD)',
-  'system-design': 'System Design',
-  dev: 'Development notes',
-  qa: 'QA / verification',
-  'post-dev': 'Post Dev / handover',
-}
 
 export interface AgentLoopArgs {
   text: string
@@ -23,25 +15,54 @@ export interface AgentLoopArgs {
   llmConfig: LlmConfig
   embedCfg: EmbeddingConfig
   currentDocJson: string
+  onDocTypesChanged?: (data: unknown[], mode: 'merge' | 'replace') => void
 }
 
 export interface AgentLoopResult {
   message: string
   document: unknown[] | null
   anchors: Record<string, string> | null
+  /** When set (e.g. from Home), save `document` into this pipeline doc id or name. */
+  targetDoc: string | null
   /** Final message transcript, for downstream diagram-fix retries. */
   messages: ChatMessage[]
 }
 
 function systemPrompt(phase: string, label: string): string {
-  const charterExtra =
-    phase === 'project-charter'
-      ? `
-CHARTER-SPECIFIC RULES:
-- Business Case FIRST, then measurable objectives (number/date/binary).
-- Return anchors: { "businessCaseId", "objectivesId", "shortName" } when drafting.
-- Keep it short (≤ ~1500–2000 words). Prefer custom blocks over long prose.`
-      : ''
+  if (phase === 'home') {
+    return `You are the Charter Ai home orchestrator. The Home Documents grid starts empty and only shows docs you create (or the user adds).
+
+You HAVE LIVE ACCESS to the user's open workspace via tools.
+
+CRITICAL — never claim you cannot read the codebase. If they ask what docs they need, investigate the repo first.
+CRITICAL — never invent what is on the pipeline. Call list_pipeline when asked what exists, or before remove/replace.
+CRITICAL — never claim you populated/wrote a document unless you returned it in "document" with "targetDoc" set to that doc's id or exact name. Home chat does not magically fill tiles.
+
+WORKFLOW:
+1. Investigate with tools: list_dir → grep / semantic_search → read_file (or reason from chat if there is little/no code).
+2. If the user asks what docs exist → list_pipeline, then answer from the observation.
+3. If creating doc slots → generate_pipeline (append, or replace when they want a full rebuild).
+4. If removing/changing slots → list_pipeline if needed, then remove_pipeline_docs and/or generate_pipeline with mode "replace".
+5. If the user asks you to draft/populate a specific document (with or without diagrams):
+   a) Call list_pipeline to get the exact id/name.
+   b) Research the codebase as needed; use validate_mermaid for any diagrams.
+   c) Finish with document=[BlockNote blocks] AND targetDoc="<id or exact name>".
+6. Otherwise finish with document:null and no targetDoc.
+
+${TOOL_CATALOG}
+
+RESPONSE PROTOCOL — every message MUST be a single JSON object with no markdown fences:
+- To call a tool: {"thought": "why", "tool": "<name>", "args": { ... }}
+- To finish (pipeline only): {"message":"…","document":null,"anchors":null}
+- To finish (draft a doc from Home): {"message":"…","targetDoc":"<id or name>","document":[ /* BlockNote blocks */ ],"anchors":null}
+Exactly one JSON object per message. Never include both "tool" and "document".
+Keep "message" short (2–5 sentences). Put the full draft only in "document".
+
+HARD CONSTRAINTS:
+- Pipeline mutations ONLY via generate_pipeline / remove_pipeline_docs.
+- Canvas content ONLY via final "document"+"targetDoc" (or when the user has that doc open).
+- You may make at most ${MAX_ITERS} tool calls before you must finish.`
+  }
 
   return `You are drafting the ${label} as a BlockNote canvas document for Charter Ai.
 You HAVE LIVE ACCESS to the user's open workspace via tools. You can list directories, grep, and read real files.
@@ -67,7 +88,7 @@ Ensure the JSON is complete and valid — do not truncate mid-object.
 HARD CONSTRAINTS:
 - Prefer custom blocks over long prose; keep it decision-dense.
 - Diagrams must be LLM-reasoned (codebase and/or chat) — never a canned template.
-- You may make at most ${MAX_ITERS} tool calls before you must finish.${charterExtra}
+- You may make at most ${MAX_ITERS} tool calls before you must finish.
 
 ${CANVAS_BLOCK_CATALOG}`
 }
@@ -176,7 +197,18 @@ function extractAnchorsObject(text: string): Record<string, string> | null {
 interface ParsedStep {
   tool?: string
   args?: Record<string, unknown>
-  final?: { message: string; document: unknown[] | null; anchors: Record<string, string> | null }
+  final?: {
+    message: string
+    document: unknown[] | null
+    anchors: Record<string, string> | null
+    targetDoc: string | null
+  }
+}
+
+function sanitizeTargetDoc(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null
+  const t = raw.trim()
+  return t || null
 }
 
 function sanitizeAnchors(raw: unknown): Record<string, string> | null {
@@ -213,6 +245,7 @@ function finalFromObject(parsed: Record<string, unknown>): ParsedStep | null {
         message: parsed.message,
         document,
         anchors: sanitizeAnchors(parsed.anchors),
+        targetDoc: sanitizeTargetDoc(parsed.targetDoc),
       },
     }
   }
@@ -223,6 +256,7 @@ function finalFromObject(parsed: Record<string, unknown>): ParsedStep | null {
         message: 'Document updated on the canvas.',
         document: parsed.document,
         anchors: sanitizeAnchors(parsed.anchors),
+        targetDoc: sanitizeTargetDoc(parsed.targetDoc),
       },
     }
   }
@@ -253,6 +287,7 @@ export function parseStep(raw: string): ParsedStep | null {
   const message = extractStringField(body, 'message')
   const document = extractDocumentArray(body)
   const anchors = extractAnchorsObject(body)
+  const targetDoc = extractStringField(body, 'targetDoc')
   const tool = extractStringField(body, 'tool')
 
   if (tool && !document) {
@@ -282,6 +317,7 @@ export function parseStep(raw: string): ParsedStep | null {
             : 'Done.'),
         document,
         anchors,
+        targetDoc,
       },
     }
   }
@@ -306,12 +342,24 @@ function safeChatMessage(raw: string, recovered?: ParsedStep | null): string {
 /** Agentic ReAct loop: investigate the code with tools, then draft the document. */
 export async function runAgentLoop(args: AgentLoopArgs): Promise<AgentLoopResult> {
   const { text, phase, fieldGuide, workspaceRoot, llmConfig, embedCfg, currentDocJson } = args
-  const label = args.label || PHASE_LABELS[phase] || phase
+  const label =
+    phase === 'home'
+      ? 'Home orchestrator'
+      : args.label || phase
 
   const seed = await buildGroundedContext(workspaceRoot, text, embedCfg, 8)
   const userParts = [`USER: ${text}`, '']
-  if (fieldGuide) userParts.push('Document guidance:', fieldGuide, '')
-  userParts.push('CURRENT DOCUMENT (BlockNote JSON):', '```json', currentDocJson, '```')
+  if (phase === 'home') {
+    userParts.push(
+      'CONTEXT: User is on the Home screen. Use generate_pipeline / list_pipeline / remove_pipeline_docs for slots. To draft a specific doc from Home, finish with both "document" (BlockNote blocks) and "targetDoc" (id or exact name from list_pipeline). Never claim a canvas was filled without that.',
+      '',
+    )
+  } else if (fieldGuide) {
+    userParts.push('Document guidance:', fieldGuide, '')
+  }
+  if (phase !== 'home') {
+    userParts.push('CURRENT DOCUMENT (BlockNote JSON):', '```json', currentDocJson, '```')
+  }
   if (seed) userParts.push('', seed)
 
   const messages: ChatMessage[] = [
@@ -319,7 +367,11 @@ export async function runAgentLoop(args: AgentLoopArgs): Promise<AgentLoopResult
     { role: 'user', content: userParts.join('\n') },
   ]
 
-  const ctx = { workspaceRoot, embedCfg }
+  const ctx = {
+    workspaceRoot,
+    embedCfg,
+    onDocTypesChanged: args.onDocTypesChanged,
+  }
   let lastRaw = ''
 
   for (let iter = 0; iter < MAX_ITERS; iter++) {
@@ -347,7 +399,9 @@ export async function runAgentLoop(args: AgentLoopArgs): Promise<AgentLoopResult
       messages.push({
         role: 'user',
         content:
-          'Your previous final JSON was invalid or truncated. Re-send ONE complete valid JSON object: {"message":"<short summary>","document":[...],"anchors":{...}}. Keep the document decision-dense so it fits. No tool calls. No markdown fences.',
+          phase === 'home'
+            ? 'Your previous final JSON was invalid or truncated. Re-send ONE complete valid JSON object. If drafting a doc include targetDoc and document; otherwise document:null. Example: {"message":"…","targetDoc":"Architecture Overview","document":[…],"anchors":null}. No tool calls. No markdown fences.'
+            : 'Your previous final JSON was invalid or truncated. Re-send ONE complete valid JSON object: {"message":"<short summary>","document":[...],"anchors":{...}}. Keep the document decision-dense so it fits. No tool calls. No markdown fences.',
       })
       const repaired = await callLlm(messages, llmConfig, { jsonMode: true })
       lastRaw = repaired
@@ -362,7 +416,9 @@ export async function runAgentLoop(args: AgentLoopArgs): Promise<AgentLoopResult
     messages.push({
       role: 'user',
       content:
-        'That was not valid. Respond with a single JSON object: either a tool call {"tool","args"} or the final {"message","document","anchors"}.',
+        phase === 'home'
+          ? 'That was not valid. Respond with a single JSON object: either a tool call {"tool","args"} or the final {"message","document","targetDoc","anchors"}.'
+          : 'That was not valid. Respond with a single JSON object: either a tool call {"tool","args"} or the final {"message","document","anchors"}.',
     })
   }
 
@@ -370,7 +426,9 @@ export async function runAgentLoop(args: AgentLoopArgs): Promise<AgentLoopResult
   messages.push({
     role: 'user',
     content:
-      'Tool budget reached. Respond NOW with the final JSON only: {"message","document","anchors"}. Keep document complete and valid. No tool calls.',
+      phase === 'home'
+        ? 'Tool budget reached. Respond NOW with final JSON only: {"message","document","targetDoc","anchors"}. Use targetDoc+document if drafting; else document:null. No tool calls.'
+        : 'Tool budget reached. Respond NOW with the final JSON only: {"message","document","anchors"}. Keep document complete and valid. No tool calls.',
   })
   const raw = await callLlm(messages, llmConfig, { jsonMode: true })
   lastRaw = raw
@@ -385,6 +443,7 @@ export async function runAgentLoop(args: AgentLoopArgs): Promise<AgentLoopResult
     message: safeChatMessage(raw, soft),
     document: null,
     anchors: null,
+    targetDoc: null,
     messages,
   }
 }

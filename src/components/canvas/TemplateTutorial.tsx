@@ -14,7 +14,7 @@ interface TutorialStep {
 const STEPS: TutorialStep[] = [
   {
     title: 'Two ways to begin',
-    body: 'Every charter can start from a proven, industry-standard template — or from a completely blank page. Pick whichever suits how you like to work.',
+    body: 'Every document can start from a saved template — or from a completely blank page. Pick whichever suits how you like to work.',
   },
   {
     title: 'Browse and preview',
