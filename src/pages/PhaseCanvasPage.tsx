@@ -15,6 +15,7 @@ import {
   saveUserTemplate,
   type CharterTemplate,
 } from '../data/docTemplates'
+import { getDocumentType } from '../data/documentTypes'
 import { storageKeyFor, TEMPLATE_TUTORIAL_BASE_KEY } from '../utils/workspaceScope'
 
 interface PhaseCanvasPageProps {
@@ -46,6 +47,8 @@ export function PhaseCanvasPage({ phaseId, onNavigate, goHome }: PhaseCanvasPage
   const [toolsTab, setToolsTab] = useState<ToolsTab>('insert')
   // Bumped after saving a template so the option list refreshes.
   const [templatesRev, setTemplatesRev] = useState(0)
+  // Bumped when the doc is renamed from the header strip.
+  const [titleRev, setTitleRev] = useState(0)
   const templateOptions = useMemo(
     () => templateOptionsForType(phaseId),
     [phaseId, templatesRev],
@@ -110,6 +113,12 @@ export function PhaseCanvasPage({ phaseId, onNavigate, goHome }: PhaseCanvasPage
     setShowTutorial(false)
   }, [tutorialKey])
 
+  // Keep masthead / sidebar title in sync after header rename.
+  const displayTitle = useMemo(() => {
+    void titleRev
+    return getDocumentType(phaseId)?.title ?? meta.title
+  }, [phaseId, meta.title, titleRev])
+
   const applyTemplate = useCallback(
     (template: CharterTemplate) => {
       applyExternalDocument(
@@ -134,12 +143,12 @@ export function PhaseCanvasPage({ phaseId, onNavigate, goHome }: PhaseCanvasPage
       window.alert('Add some content to this document before saving it as a template.')
       return
     }
-    const name = window.prompt('Name this template', `${meta.title} template`)
+    const name = window.prompt('Name this template', `${displayTitle} template`)
     if (!name || !name.trim()) return
     const created = saveUserTemplate(phaseId, name.trim(), source)
     setTemplatesRev((n) => n + 1)
     setPreviewTemplateId(created.id)
-  }, [editor, blocks, meta.title, phaseId])
+  }, [editor, blocks, displayTitle, phaseId])
 
   const handleEditorReady = useCallback((next: CanvasEditor | null) => {
     setEditor(next)
@@ -168,13 +177,14 @@ export function PhaseCanvasPage({ phaseId, onNavigate, goHome }: PhaseCanvasPage
         saveLabel={saveLabel}
         currentPhaseId={phaseId}
         onNavigate={onNavigate}
+        onDocRenamed={() => setTitleRev((n) => n + 1)}
       />
 
       <div className="charter-canvas-workspace">
         <CanvasToolsSidebar
           editor={editor}
           blocks={blocks}
-          phaseTitle={meta.title}
+          phaseTitle={displayTitle}
           collapsed={toolsCollapsed}
           onToggleCollapsed={() => setToolsCollapsed((v) => !v)}
           tab={toolsTab}
@@ -191,7 +201,7 @@ export function PhaseCanvasPage({ phaseId, onNavigate, goHome }: PhaseCanvasPage
         {templateViewActive ? (
           <div className="charter-canvas-scroll flex-1 min-h-0 overflow-y-auto">
             <TemplateGallery
-              documentLabel={meta.title}
+              documentLabel={displayTitle}
               template={previewTemplate}
               currentTemplateId={templateId}
               hasExistingContent={hasContent}
@@ -205,7 +215,7 @@ export function PhaseCanvasPage({ phaseId, onNavigate, goHome }: PhaseCanvasPage
               {showPhaseMasthead ? (
                 <header className="charter-canvas-masthead">
                   <p className="charter-canvas-kicker">{meta.kicker || `Phase ${phasePad}`}</p>
-                  <h1 className="charter-canvas-title">{meta.title}</h1>
+                  <h1 className="charter-canvas-title">{displayTitle}</h1>
                   <p className="charter-canvas-subtitle">{meta.subtitle}</p>
                 </header>
               ) : null}
@@ -245,7 +255,7 @@ export function PhaseCanvasPage({ phaseId, onNavigate, goHome }: PhaseCanvasPage
       </div>
 
       {templatesEnabled && showTutorial ? (
-        <TemplateTutorial documentLabel={meta.title} onClose={dismissTutorial} />
+        <TemplateTutorial documentLabel={displayTitle} onClose={dismissTutorial} />
       ) : null}
     </div>
   )

@@ -952,6 +952,34 @@ body:has(.chat-panel--open) .chat-toggle {
     linear-gradient(180deg, #e8e8ec 0%, #d8d8de 100%);
 }
 
+.pipeline-doc-tab-label {
+  background: transparent;
+  border: none;
+  padding: 2px 4px;
+  margin: -2px -4px;
+  color: inherit;
+  border-radius: 2px;
+}
+
+.pipeline-doc-tab-label--editable:hover {
+  background: rgba(0, 0, 0, 0.06);
+  outline: 1px solid rgba(0, 0, 0, 0.12);
+}
+
+.pipeline-doc-tab-input {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-label);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.2;
+  color: var(--color-on-background);
+  background: #fff;
+  border: 2px solid var(--color-on-background);
+  padding: 2px 6px;
+  outline: none;
+}
+
 .charter-canvas-workspace {
   display: flex;
   flex: 1;
