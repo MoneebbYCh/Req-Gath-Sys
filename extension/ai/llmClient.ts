@@ -130,7 +130,8 @@ export async function callLlm(
   options: { jsonMode?: boolean; timeout?: number; maxTokens?: number; retries?: number } = {},
 ): Promise<string> {
   // Drafting full canvases needs headroom; 60s was too tight for DeepSeek thinking.
-  const { jsonMode = true, timeout = 180_000, maxTokens = 8192, retries = 2 } = options
+  // Do not set a default max_tokens — let the provider use the model's full output limit.
+  const { jsonMode = true, timeout = 180_000, maxTokens, retries = 2 } = options
   const apiKey = resolveApiKey(config)
 
   if (!apiKey && config.provider !== 'local') {
@@ -152,7 +153,9 @@ export async function callLlm(
   const body: Record<string, unknown> = {
     model,
     messages,
-    max_tokens: maxTokens,
+  }
+  if (typeof maxTokens === 'number' && maxTokens > 0) {
+    body.max_tokens = maxTokens
   }
 
   if (jsonMode) {
@@ -183,8 +186,8 @@ export async function callLlm(
         (typeof message?.reasoning === 'string' ? message.reasoning.length : 0)
       lastError =
         finish === 'length'
-          ? `The model hit the token limit before writing an answer (finish_reason=length` +
-            `${reasoningLen ? `, reasoning_chars=${reasoningLen}` : ''}). Try a shorter request or open the document and ask again.`
+          ? `The model hit its output token limit before finishing (finish_reason=length` +
+            `${reasoningLen ? `, reasoning_chars=${reasoningLen}` : ''}). Open the document and ask it to continue, or try again.`
           : `The model returned an empty response (finish_reason=${finish}` +
             `${reasoningLen ? `, reasoning_chars=${reasoningLen}` : ''}).`
 

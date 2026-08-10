@@ -85,8 +85,8 @@ Diagram tool (use when the document needs a Mermaid diagram):
 Pipeline tools (document set on Home — starts empty; only what you create appears):
 - list_pipeline {}  -> list current custom documents (id, name). Call this before claiming what exists, or when the user asks what docs were made.
 - generate_pipeline { "documents": [ { "name": string, "icon"?: string, "description"?: string } ], "mode"?: "append"|"replace" }
-  -> creates canvas document slots. "append" (default) adds; "replace" rebuilds the whole custom list.
-  Prefer 3–8 focused docs grounded in the codebase (or the user's ask). Do NOT draft full canvases here — just create the slots.
+  -> creates canvas document slots on Home. "append" (default) adds; "replace" rebuilds the whole list.
+  Use this whenever the user wants a new doc on the pipeline. Prefer 1–8 focused docs. Do NOT put full canvas bodies in this tool — create the slot, then finish with document+targetDoc to draft it.
 - remove_pipeline_docs { "ids"?: string[], "names"?: string[], "all"?: boolean }
   -> delete custom docs by id and/or name (case-insensitive), or all:true to clear the pipeline. Call list_pipeline first if unsure.`
 
@@ -450,14 +450,14 @@ async function generatePipelineTool(
     }
   }
 
-  ctx.onDocTypesChanged?.(nextList, mode === 'replace' ? 'replace' : 'merge')
+  ctx.onDocTypesChanged?.(nextList, 'replace')
 
   const lines = [
     `Pipeline ${mode === 'replace' ? 'replaced' : 'updated'}: ${nextList.length} document(s) on Home.`,
     created.length
       ? `Created: ${created.map((c) => `${c.name} (${c.id})`).join(', ')}`
       : 'No new documents created (names already existed).',
-    'Open any tile from Home to draft it with chat.',
+    'To draft into a new slot next, finish with document=[…] and targetDoc set to that id or exact name.',
   ]
   if (notes.length) lines.push('Notes:', ...notes.map((n) => `- ${n}`))
   return lines.join('\n')

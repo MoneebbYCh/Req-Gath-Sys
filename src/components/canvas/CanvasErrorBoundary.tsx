@@ -35,7 +35,12 @@ export class CanvasErrorBoundary extends Component<Props, State> {
             The saved document had content the editor could not load. Reset to a blank page, or
             check the console for details.
           </p>
-          <p className="charter-canvas-error-detail">{this.state.error.message}</p>
+          <p className="charter-canvas-error-detail">
+            {this.state.error.message}
+            {this.state.error.cause instanceof Error
+              ? ` — ${this.state.error.cause.message}`
+              : ''}
+          </p>
           <button type="button" className="charter-canvas-error-reset" onClick={this.handleReset}>
             Reset canvas
           </button>

@@ -224798,7 +224798,7 @@ function sleep2(ms) {
   return new Promise((resolve2) => setTimeout(resolve2, ms));
 }
 async function callLlm(messages, config, options = {}) {
-  const { jsonMode = true, timeout = 18e4, maxTokens = 8192, retries = 2 } = options;
+  const { jsonMode = true, timeout = 18e4, maxTokens, retries = 2 } = options;
   const apiKey = resolveApiKey(config);
   if (!apiKey && config.provider !== "local") {
     const provider = getProvider(config.provider);
@@ -224815,9 +224815,11 @@ async function callLlm(messages, config, options = {}) {
   const model = resolveModel(config);
   const body = {
     model,
-    messages,
-    max_tokens: maxTokens
+    messages
   };
+  if (typeof maxTokens === "number" && maxTokens > 0) {
+    body.max_tokens = maxTokens;
+  }
   if (jsonMode) {
     body.response_format = { type: "json_object" };
   }
@@ -224836,7 +224838,7 @@ async function callLlm(messages, config, options = {}) {
       if (text) return text;
       const finish = choice?.finish_reason ?? "unknown";
       const reasoningLen = (typeof message?.reasoning_content === "string" ? message.reasoning_content.length : 0) || (typeof message?.reasoning === "string" ? message.reasoning.length : 0);
-      lastError = finish === "length" ? `The model hit the token limit before writing an answer (finish_reason=length${reasoningLen ? `, reasoning_chars=${reasoningLen}` : ""}). Try a shorter request or open the document and ask again.` : `The model returned an empty response (finish_reason=${finish}${reasoningLen ? `, reasoning_chars=${reasoningLen}` : ""}).`;
+      lastError = finish === "length" ? `The model hit its output token limit before finishing (finish_reason=length${reasoningLen ? `, reasoning_chars=${reasoningLen}` : ""}). Open the document and ask it to continue, or try again.` : `The model returned an empty response (finish_reason=${finish}${reasoningLen ? `, reasoning_chars=${reasoningLen}` : ""}).`;
       if (attempt < retries) {
         await sleep2(400 * (attempt + 1));
         continue;
@@ -225591,8 +225593,8 @@ Diagram tool (use when the document needs a Mermaid diagram):
 Pipeline tools (document set on Home \u2014 starts empty; only what you create appears):
 - list_pipeline {}  -> list current custom documents (id, name). Call this before claiming what exists, or when the user asks what docs were made.
 - generate_pipeline { "documents": [ { "name": string, "icon"?: string, "description"?: string } ], "mode"?: "append"|"replace" }
-  -> creates canvas document slots. "append" (default) adds; "replace" rebuilds the whole custom list.
-  Prefer 3\u20138 focused docs grounded in the codebase (or the user's ask). Do NOT draft full canvases here \u2014 just create the slots.
+  -> creates canvas document slots on Home. "append" (default) adds; "replace" rebuilds the whole list.
+  Use this whenever the user wants a new doc on the pipeline. Prefer 1\u20138 focused docs. Do NOT put full canvas bodies in this tool \u2014 create the slot, then finish with document+targetDoc to draft it.
 - remove_pipeline_docs { "ids"?: string[], "names"?: string[], "all"?: boolean }
   -> delete custom docs by id and/or name (case-insensitive), or all:true to clear the pipeline. Call list_pipeline first if unsure.`;
 function clampInt(value, fallback, min, max) {
@@ -225866,11 +225868,11 @@ async function generatePipelineTool(ctx, args) {
     } catch {
     }
   }
-  ctx.onDocTypesChanged?.(nextList, mode === "replace" ? "replace" : "merge");
+  ctx.onDocTypesChanged?.(nextList, "replace");
   const lines = [
     `Pipeline ${mode === "replace" ? "replaced" : "updated"}: ${nextList.length} document(s) on Home.`,
     created.length ? `Created: ${created.map((c2) => `${c2.name} (${c2.id})`).join(", ")}` : "No new documents created (names already existed).",
-    "Open any tile from Home to draft it with chat."
+    "To draft into a new slot next, finish with document=[\u2026] and targetDoc set to that id or exact name."
   ];
   if (notes.length) lines.push("Notes:", ...notes.map((n2) => `- ${n2}`));
   return lines.join("\n");
@@ -225922,18 +225924,20 @@ You HAVE LIVE ACCESS to the user's open workspace via tools.
 
 CRITICAL \u2014 never claim you cannot read the codebase. If they ask what docs they need, investigate the repo first.
 CRITICAL \u2014 never invent what is on the pipeline. Call list_pipeline when asked what exists, or before remove/replace.
+CRITICAL \u2014 never claim you created a pipeline document unless you called generate_pipeline (or the user already had that tile).
 CRITICAL \u2014 never claim you populated/wrote a document unless you returned it in "document" with "targetDoc" set to that doc's id or exact name. Home chat does not magically fill tiles.
 
 WORKFLOW:
 1. Investigate with tools: list_dir \u2192 grep / semantic_search \u2192 read_file (or reason from chat if there is little/no code).
 2. If the user asks what docs exist \u2192 list_pipeline, then answer from the observation.
-3. If creating doc slots \u2192 generate_pipeline (append, or replace when they want a full rebuild).
+3. If creating / adding doc slots \u2192 generate_pipeline with mode "append" (or "replace" only when they want a full rebuild).
 4. If removing/changing slots \u2192 list_pipeline if needed, then remove_pipeline_docs and/or generate_pipeline with mode "replace".
-5. If the user asks you to draft/populate a specific document (with or without diagrams):
-   a) Call list_pipeline to get the exact id/name.
-   b) Research the codebase as needed; use validate_mermaid for any diagrams.
-   c) Finish with document=[BlockNote blocks] AND targetDoc="<id or exact name>".
-6. Otherwise finish with document:null and no targetDoc.
+5. If the user asks you to create AND draft a document:
+   a) generate_pipeline (append) for the new name(s) if they are not already on the pipeline.
+   b) Research as needed; validate_mermaid for diagrams.
+   c) Finish with document=[BlockNote blocks] AND targetDoc="<id or exact name from the tool observation>".
+6. If drafting an existing doc only: list_pipeline \u2192 research \u2192 finish with document + targetDoc.
+7. Otherwise finish with document:null and no targetDoc.
 
 ${TOOL_CATALOG}
 
@@ -225951,27 +225955,33 @@ HARD CONSTRAINTS:
   }
   return `You are drafting the ${label} as a BlockNote canvas document for Charter Ai.
 You HAVE LIVE ACCESS to the user's open workspace via tools. You can list directories, grep, and read real files.
+You can also manage the Home pipeline (create/list/remove document slots) with the pipeline tools.
 
 CRITICAL \u2014 never claim you cannot read the codebase. Never tell the user to paste code or run external commands instead of using your tools. If the user asks you to read/analyze the code, your FIRST response must be a tool call (usually list_dir or grep).
+CRITICAL \u2014 to add a NEW document to the Home pipeline, you MUST call generate_pipeline (do not invent tiles).
+CRITICAL \u2014 if drafting a doc other than the one currently open, finish with targetDoc set to that doc's id or exact name (after generate_pipeline / list_pipeline).
 
 WORKFLOW:
 1. Investigate with tools when a codebase is available: list_dir \u2192 grep / semantic_search \u2192 read_file.
 2. Ground claims in real code and cite file:line. If there is little/no code, reason from the chat and requirements instead.
-3. When the document needs a diagram: draft Mermaid yourself from that understanding, then call validate_mermaid. Fix and re-validate if it fails. Do not skip validation for diagrams you include.
-4. When you have enough evidence, output the final document JSON (include validated diagram blocks).
+3. If the user wants a new pipeline document: generate_pipeline (append) first, then draft with targetDoc pointing at the new id/name.
+4. When the document needs a diagram: draft Mermaid yourself from that understanding, then call validate_mermaid. Fix and re-validate if it fails. Do not skip validation for diagrams you include.
+5. When you have enough evidence, output the final document JSON (include validated diagram blocks). For the open canvas you may omit targetDoc; for any other/new doc you must set targetDoc.
 
 ${TOOL_CATALOG}
 
 RESPONSE PROTOCOL \u2014 every message MUST be a single JSON object with no markdown fences:
 - To call a tool: {"thought": "why", "tool": "<name>", "args": { ... }}
-- To finish:      {"message": "short human summary of what you changed + 1-3 follow-ups", "document": [ /* BlockNote blocks */ ] | null, "anchors": { /* optional */ } | null}
+- To finish (this open doc): {"message": "short human summary of what you changed + 1-3 follow-ups", "document": [ /* BlockNote blocks */ ] | null, "anchors": { /* optional */ } | null}
+- To finish (another/new pipeline doc): same, plus "targetDoc": "<id or exact name>"
 Exactly one JSON object per message. Never include both "tool" and "document".
 Set "document": null if the user only asked a question and no document change is needed.
 Keep "message" short (2\u20135 sentences). Put the full draft only in "document", never paste the document JSON into "message".
 Ensure the JSON is complete and valid \u2014 do not truncate mid-object.
 
 HARD CONSTRAINTS:
-- Prefer custom blocks over long prose; keep it decision-dense.
+- Prefer custom blocks for structured content (KPIs, scope, risks, diagrams); use headings and paragraphs for thorough explanation when useful.
+- Pipeline mutations ONLY via generate_pipeline / remove_pipeline_docs.
 - Diagrams must be LLM-reasoned (codebase and/or chat) \u2014 never a canned template.
 - You may make at most ${MAX_ITERS} tool calls before you must finish.
 
@@ -226164,7 +226174,7 @@ async function runAgentLoop(args) {
   const userParts = [`USER: ${text}`, ""];
   if (phase === "home") {
     userParts.push(
-      'CONTEXT: User is on the Home screen. Use generate_pipeline / list_pipeline / remove_pipeline_docs for slots. To draft a specific doc from Home, finish with both "document" (BlockNote blocks) and "targetDoc" (id or exact name from list_pipeline). Never claim a canvas was filled without that.',
+      'CONTEXT: User is on the Home screen. To add docs to the pipeline call generate_pipeline. To draft one, finish with both "document" (BlockNote blocks) and "targetDoc" (id or exact name from list_pipeline / generate_pipeline). Never claim a canvas was filled without that.',
       ""
     );
   } else if (fieldGuide) {
@@ -226205,7 +226215,7 @@ ${observation}`
       messages.push({ role: "assistant", content: raw2 });
       messages.push({
         role: "user",
-        content: phase === "home" ? 'Your previous final JSON was invalid or truncated. Re-send ONE complete valid JSON object. If drafting a doc include targetDoc and document; otherwise document:null. Example: {"message":"\u2026","targetDoc":"Architecture Overview","document":[\u2026],"anchors":null}. No tool calls. No markdown fences.' : 'Your previous final JSON was invalid or truncated. Re-send ONE complete valid JSON object: {"message":"<short summary>","document":[...],"anchors":{...}}. Keep the document decision-dense so it fits. No tool calls. No markdown fences.'
+        content: phase === "home" ? 'Your previous final JSON was invalid or truncated. Re-send ONE complete valid JSON object. If drafting a doc include targetDoc and document; otherwise document:null. Example: {"message":"\u2026","targetDoc":"Architecture Overview","document":[\u2026],"anchors":null}. No tool calls. No markdown fences.' : 'Your previous final JSON was invalid or truncated. Re-send ONE complete valid JSON object: {"message":"<short summary>","document":[...],"anchors":{...}}. Include the full document \u2014 do not truncate mid-JSON. No tool calls. No markdown fences.'
       });
       const repaired = await callLlm(messages, llmConfig, { jsonMode: true });
       lastRaw = repaired;
@@ -226249,8 +226259,102 @@ var DIAGRAM_ALIASES = /* @__PURE__ */ new Set([
   "architectureDiagram",
   "diagramBlock"
 ]);
+var NONE_CONTENT_TYPES = /* @__PURE__ */ new Set([
+  "kpiGrid",
+  "scopeBounds",
+  "stakeholderTable",
+  "riskList",
+  "diagram",
+  "divider",
+  "image",
+  "file",
+  "video",
+  "audio"
+]);
+var KNOWN_STYLES = /* @__PURE__ */ new Set([
+  "bold",
+  "italic",
+  "underline",
+  "strike",
+  "code",
+  "textColor",
+  "backgroundColor"
+]);
 function tryString(v2) {
   return typeof v2 === "string" && v2.trim() ? v2.trim() : "";
+}
+function extractPlainText(content) {
+  if (typeof content === "string") return content;
+  if (typeof content === "number" || typeof content === "boolean") return String(content);
+  if (!content || typeof content !== "object") return "";
+  if (!Array.isArray(content)) {
+    const obj = content;
+    if (typeof obj.text === "string") return obj.text;
+    return "";
+  }
+  return content.map((part) => {
+    if (typeof part === "string") return part;
+    if (typeof part === "number" || typeof part === "boolean") return String(part);
+    if (part && typeof part === "object" && "text" in part) {
+      return String(part.text ?? "");
+    }
+    return "";
+  }).join("");
+}
+function sanitizeStyles(styles) {
+  if (!styles || typeof styles !== "object" || Array.isArray(styles)) return {};
+  const out = {};
+  for (const [key, value] of Object.entries(styles)) {
+    if (!KNOWN_STYLES.has(key)) continue;
+    if (key === "textColor" || key === "backgroundColor") {
+      if (typeof value === "string" && value.trim()) out[key] = value.trim();
+      continue;
+    }
+    if (value) out[key] = true;
+  }
+  return out;
+}
+function sanitizeInlineContent(content) {
+  if (content == null) return "";
+  if (typeof content === "string") return content;
+  if (typeof content === "number" || typeof content === "boolean") return String(content);
+  if (Array.isArray(content)) {
+    const parts = [];
+    for (const item of content) {
+      if (typeof item === "string") {
+        if (item) parts.push(item);
+        continue;
+      }
+      if (typeof item === "number" || typeof item === "boolean") {
+        parts.push(String(item));
+        continue;
+      }
+      if (!item || typeof item !== "object") continue;
+      const obj = item;
+      if (obj.type === "link" || typeof obj.href === "string" && obj.content != null) {
+        const href = typeof obj.href === "string" ? obj.href.trim() : "";
+        const nested = sanitizeInlineContent(obj.content);
+        const linkBody = typeof nested === "string" ? nested : extractPlainText(nested);
+        if (href && linkBody) parts.push({ type: "link", href, content: linkBody });
+        else if (linkBody) parts.push(linkBody);
+        continue;
+      }
+      if (obj.type === "text" || typeof obj.text === "string") {
+        parts.push({
+          type: "text",
+          text: String(obj.text ?? ""),
+          styles: sanitizeStyles(obj.styles)
+        });
+      }
+    }
+    return parts.length > 0 ? parts : "";
+  }
+  if (typeof content === "object") {
+    const obj = content;
+    if (typeof obj.text === "string") return obj.text;
+    return extractPlainText(content);
+  }
+  return "";
 }
 function extractMermaidCode(block) {
   const props = block.props && typeof block.props === "object" && !Array.isArray(block.props) ? block.props : {};
@@ -226268,23 +226372,94 @@ function extractMermaidCode(block) {
   if (fence) code = fence[1].trim();
   return { code, title };
 }
+function normalizeCustomProps(type, props) {
+  if (type === "heading") {
+    const level = Number(props.level);
+    props.level = Number.isFinite(level) && level >= 1 && level <= 6 ? Math.trunc(level) : 1;
+  }
+  if (type === "callout") {
+    if (props.title == null) props.title = "";
+    if (props.anchorId == null) props.anchorId = "";
+    const allowed = /* @__PURE__ */ new Set(["info", "warn", "success", "error"]);
+    if (!allowed.has(String(props.variant ?? ""))) props.variant = "info";
+  }
+  if (type === "kpiGrid") {
+    if (Array.isArray(props.items)) {
+      props.itemsJson = JSON.stringify(props.items);
+      delete props.items;
+    } else if (typeof props.itemsJson !== "string") {
+      props.itemsJson = "[]";
+    }
+    if (props.anchorId == null) props.anchorId = "";
+  }
+  if (type === "stakeholderTable" || type === "riskList") {
+    if (Array.isArray(props.rows)) {
+      props.rowsJson = JSON.stringify(props.rows);
+      delete props.rows;
+    } else if (typeof props.rowsJson !== "string") {
+      props.rowsJson = "[]";
+    }
+  }
+  if (type === "scopeBounds") {
+    if (Array.isArray(props.inScope)) {
+      props.inScopeJson = JSON.stringify(props.inScope);
+      delete props.inScope;
+    } else if (typeof props.inScopeJson !== "string") {
+      props.inScopeJson = "[]";
+    }
+    if (Array.isArray(props.outOfScope)) {
+      props.outOfScopeJson = JSON.stringify(props.outOfScope);
+      delete props.outOfScope;
+    } else if (typeof props.outOfScopeJson !== "string") {
+      props.outOfScopeJson = "[]";
+    }
+  }
+  for (const key of Object.keys(props)) {
+    const value = props[key];
+    if (value !== null && typeof value === "object") {
+      try {
+        props[key] = JSON.stringify(value);
+      } catch {
+        delete props[key];
+      }
+    }
+  }
+}
 function normalizeDocumentBlocks(blocks) {
   return blocks.map((raw) => {
     if (!raw || typeof raw !== "object") return raw;
     const block = { ...raw };
-    const type = String(block.type || "");
-    if (!DIAGRAM_ALIASES.has(type)) return block;
+    let type = String(block.type || "paragraph");
+    if (DIAGRAM_ALIASES.has(type)) {
+      const props2 = block.props && typeof block.props === "object" && !Array.isArray(block.props) ? { ...block.props } : {};
+      const { code, title } = extractMermaidCode(block);
+      if (code) props2.code = code;
+      if (title) props2.title = title;
+      else if (typeof props2.title !== "string") props2.title = "";
+      if (props2.source !== "code-index") props2.source = "llm";
+      delete props2.mermaid;
+      delete props2.sourceCode;
+      delete props2.diagram;
+      delete block.content;
+      normalizeCustomProps("diagram", props2);
+      return { ...block, type: "diagram", props: props2 };
+    }
     const props = block.props && typeof block.props === "object" && !Array.isArray(block.props) ? { ...block.props } : {};
-    const { code, title } = extractMermaidCode(block);
-    if (code) props.code = code;
-    if (title) props.title = title;
-    else if (typeof props.title !== "string") props.title = "";
-    if (props.source !== "code-index") props.source = "llm";
-    delete props.mermaid;
-    delete props.sourceCode;
-    delete props.diagram;
-    delete block.content;
-    return { ...block, type: "diagram", props };
+    normalizeCustomProps(type, props);
+    if (NONE_CONTENT_TYPES.has(type)) {
+      delete block.content;
+    } else if (block.content !== void 0 && block.content !== null) {
+      if (type === "table" && block.content && typeof block.content === "object" && !Array.isArray(block.content) && block.content.type === "tableContent") {
+      } else {
+        block.content = sanitizeInlineContent(block.content);
+      }
+    }
+    if (Array.isArray(block.children) && block.children.length) {
+      block.children = normalizeDocumentBlocks(block.children);
+    } else {
+      delete block.children;
+    }
+    return { ...block, type, props };
   });
 }
 
@@ -226393,20 +226568,22 @@ async function processChat(args) {
   const targetDoc = result.targetDoc;
   let formUpdated = false;
   let reload = null;
-  let savePhase = isCanvasPhase(phase) ? phase : null;
-  if (!savePhase && document && targetDoc) {
+  let savePhase = null;
+  if (document && targetDoc) {
     const resolved = await resolvePipelineDocTarget(workspaceRoot, targetDoc);
     if (resolved) {
       savePhase = resolved.id;
     } else {
       replyText = `${replyText}
 
-(Could not save the draft \u2014 no pipeline doc matched "${targetDoc}". Call list_pipeline and use an exact id or name.)`;
+(Could not save the draft \u2014 no pipeline doc matched "${targetDoc}". Call list_pipeline / generate_pipeline first, then use that exact id or name as targetDoc.)`;
     }
-  } else if (!savePhase && document && !targetDoc) {
+  } else if (document && isCanvasPhase(phase)) {
+    savePhase = phase;
+  } else if (document && !targetDoc) {
     replyText = `${replyText}
 
-(Draft was not saved \u2014 from Home you must set "targetDoc" to the document id or name, or open that document first.)`;
+(Draft was not saved \u2014 set "targetDoc" to the document id or name from list_pipeline, or open that document first.)`;
   }
   if (savePhase && document) {
     const normalizedDoc = normalizeDocumentBlocks(document);
@@ -226425,11 +226602,13 @@ async function processChat(args) {
     await saveForm(workspaceRoot, savePhase, saved);
     reload = { type: "load_canvas", phase: savePhase, data: saved };
     formUpdated = true;
-    if (phase === "home" && targetDoc) {
+    if (targetDoc || phase === "home") {
       const label = await docLabelFor(workspaceRoot, savePhase) || savePhase;
-      replyText = `${replyText}
+      if (phase === "home" || phase !== savePhase) {
+        replyText = `${replyText}
 
 (Saved to \u201C${label}\u201D \u2014 open that tile on Home to view it.)`;
+      }
     }
     if (notes.length) {
       return {

@@ -187,17 +187,20 @@ export async function processChat(args: ProcessChatArgs): Promise<ChatResult> {
   let formUpdated = false
   let reload: ChatReload | null = null
 
-  // Resolve where to save: open canvas phase, or Home → targetDoc name/id.
-  let savePhase: string | null = isCanvasPhase(phase) ? phase : null
-  if (!savePhase && document && targetDoc) {
+  // Resolve where to save. Prefer explicit targetDoc (id or name) so the agent can
+  // create a pipeline slot then draft into it from Home or from another open canvas.
+  let savePhase: string | null = null
+  if (document && targetDoc) {
     const resolved = await resolvePipelineDocTarget(workspaceRoot, targetDoc)
     if (resolved) {
       savePhase = resolved.id
     } else {
-      replyText = `${replyText}\n\n(Could not save the draft — no pipeline doc matched "${targetDoc}". Call list_pipeline and use an exact id or name.)`
+      replyText = `${replyText}\n\n(Could not save the draft — no pipeline doc matched "${targetDoc}". Call list_pipeline / generate_pipeline first, then use that exact id or name as targetDoc.)`
     }
-  } else if (!savePhase && document && !targetDoc) {
-    replyText = `${replyText}\n\n(Draft was not saved — from Home you must set "targetDoc" to the document id or name, or open that document first.)`
+  } else if (document && isCanvasPhase(phase)) {
+    savePhase = phase
+  } else if (document && !targetDoc) {
+    replyText = `${replyText}\n\n(Draft was not saved — set "targetDoc" to the document id or name from list_pipeline, or open that document first.)`
   }
 
   if (savePhase && document) {
@@ -217,9 +220,11 @@ export async function processChat(args: ProcessChatArgs): Promise<ChatResult> {
     await saveForm(workspaceRoot, savePhase, saved)
     reload = { type: 'load_canvas', phase: savePhase, data: saved }
     formUpdated = true
-    if (phase === 'home' && targetDoc) {
+    if (targetDoc || phase === 'home') {
       const label = (await docLabelFor(workspaceRoot, savePhase)) || savePhase
-      replyText = `${replyText}\n\n(Saved to “${label}” — open that tile on Home to view it.)`
+      if (phase === 'home' || phase !== savePhase) {
+        replyText = `${replyText}\n\n(Saved to “${label}” — open that tile on Home to view it.)`
+      }
     }
     if (notes.length) {
       return {
