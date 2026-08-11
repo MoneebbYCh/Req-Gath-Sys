@@ -1,19 +1,14 @@
 import * as vscode from 'vscode'
 import * as fs from 'fs'
 import * as path from 'path'
-import { CodeIndexer } from './codeIndexer'
 import { getApiKey, promptForApiKey } from './apiKeyManager'
 import {
   initWorkspace,
-  loadConfig,
   loadDocTypes,
   loadForm,
-  resolveEmbeddingSettings,
-  saveConfig,
   saveDocTypes,
   saveForm,
 } from './formStateManager'
-import { EMBEDDING_PROVIDERS } from './ai/llmClient'
 import { processChat } from './ai/agent'
 import type { WebviewToExtensionMessage, ExtensionToWebviewMessage } from './protocol'
 
@@ -85,6 +80,7 @@ export function activate(context: vscode.ExtensionContext) {
             phase: msg.phase,
             workspaceRoot: ws,
             apiKey,
+            history: Array.isArray(msg.history) ? msg.history : [],
             onStatus: (text) => postMessage({ type: 'chatStatus', text }),
             onDocTypesChanged: (data, mode) =>
               postMessage({ type: 'loadDocTypes', data, mode }),
@@ -122,7 +118,7 @@ export function activate(context: vscode.ExtensionContext) {
     try {
       await initWorkspace(ws)
     } catch {
-      /* folder may be read-only; indexing/docs will surface errors later */
+      /* folder may be read-only; docs will surface errors later */
     }
     const folder = vscode.workspace.workspaceFolders?.[0]
     const fullPath = folder?.uri.fsPath ?? ws
@@ -166,64 +162,6 @@ export function activate(context: vscode.ExtensionContext) {
 
     vscode.commands.registerCommand('charter-ai.configureApiKey', async () => {
       await promptForApiKey(context)
-    }),
-
-    vscode.commands.registerCommand('charter-ai.configureEmbeddings', async () => {
-      const ws = workspaceRoot()
-      if (!ws) { vscode.window.showErrorMessage('Open a workspace first.'); return }
-
-      const config = await loadConfig(ws)
-      const current = resolveEmbeddingSettings(config)
-      const providerPick = await vscode.window.showQuickPick(
-        Object.keys(EMBEDDING_PROVIDERS).map((id) => ({
-          label: id,
-          description: id === current.provider ? 'current' : '',
-        })),
-        { placeHolder: 'Select the embeddings provider for code search' },
-      )
-      if (!providerPick) return
-
-      const defaultModel = EMBEDDING_PROVIDERS[providerPick.label]?.defaultModel ?? current.model
-      const model = await vscode.window.showInputBox({
-        title: 'Charter Ai: Embedding Model',
-        prompt: `Embedding model for "${providerPick.label}"`,
-        value: providerPick.label === current.provider ? current.model : defaultModel,
-        ignoreFocusOut: true,
-      })
-      if (model === undefined) return
-
-      config.embeddings = { provider: providerPick.label, model: model.trim() || defaultModel }
-      await saveConfig(ws, config)
-      vscode.window.showInformationMessage(
-        `Embeddings set to ${config.embeddings.provider}/${config.embeddings.model}. Re-run Update Semantic Index to apply.`,
-      )
-    }),
-
-    vscode.commands.registerCommand('charter-ai.indexCodebase', async () => {
-      const ws = workspaceRoot()
-      if (!ws) { vscode.window.showErrorMessage('Open a workspace first.'); return }
-
-      await vscode.window.withProgress({
-        location: vscode.ProgressLocation.Notification,
-        title: 'Updating semantic index...',
-        cancellable: false,
-      }, async (progress) => {
-        try {
-          const indexer = new CodeIndexer(ws)
-          const embedCfg = resolveEmbeddingSettings(await loadConfig(ws))
-          const stats = await indexer.syncEmbeddings(embedCfg, (p) => {
-            progress.report({ message: `${p.phase} (${p.percent}%)` })
-          })
-          vscode.window.showInformationMessage(
-            `Semantic index ready: ${stats.chunks} chunks (${stats.changed} file${stats.changed === 1 ? '' : 's'} updated, ${embedCfg.provider}/${embedCfg.model}).`,
-          )
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err)
-          vscode.window.showErrorMessage(
-            `Semantic indexing failed: ${msg}. Is Ollama running (ollama pull nomic-embed-text)?`,
-          )
-        }
-      })
     }),
 
     vscode.commands.registerCommand('charter-ai.initializeWorkspace', async () => {

@@ -16,34 +16,13 @@ export interface LlmSettings {
   model: string | null
 }
 
-export interface EmbeddingSettings {
-  provider: string
-  model: string
-}
-
 export interface WorkspaceConfig {
   llm: LlmSettings
-  embeddings?: EmbeddingSettings
-}
-
-export const DEFAULT_EMBEDDING_SETTINGS: EmbeddingSettings = {
-  provider: 'ollama',
-  model: 'nomic-embed-text',
 }
 
 function defaultConfig(): WorkspaceConfig {
   return {
     llm: { provider: 'deepseek', model: null },
-    embeddings: { ...DEFAULT_EMBEDDING_SETTINGS },
-  }
-}
-
-/** Embedding settings from config with defaults applied. */
-export function resolveEmbeddingSettings(config: WorkspaceConfig): EmbeddingSettings {
-  const e = config.embeddings
-  return {
-    provider: e?.provider || DEFAULT_EMBEDDING_SETTINGS.provider,
-    model: e?.model || DEFAULT_EMBEDDING_SETTINGS.model,
   }
 }
 

@@ -25,16 +25,8 @@
         "title": "Charter Ai: Initialize Workspace"
       },
       {
-        "command": "charter-ai.indexCodebase",
-        "title": "Charter Ai: Update Semantic Index"
-      },
-      {
         "command": "charter-ai.configureApiKey",
         "title": "Charter Ai: Configure API Key"
-      },
-      {
-        "command": "charter-ai.configureEmbeddings",
-        "title": "Charter Ai: Configure Embeddings"
       }
     ],
     "menus": {
@@ -46,13 +38,7 @@
           "command": "charter-ai.initializeWorkspace"
         },
         {
-          "command": "charter-ai.indexCodebase"
-        },
-        {
           "command": "charter-ai.configureApiKey"
-        },
-        {
-          "command": "charter-ai.configureEmbeddings"
         }
       ]
     }
@@ -60,7 +46,7 @@
   "scripts": {
     "dev": "vite",
     "build:webview": "vite build",
-    "build:extension": "esbuild extension/extension.ts --bundle --outfile=out/extension.cjs --external:vscode --external:mermaid --format=cjs --platform=node --tsconfig=tsconfig.extension.json",
+    "build:extension": "esbuild extension/extension.ts --bundle --outfile=out/extension.cjs --external:vscode --external:mermaid --external:@vscode/ripgrep --format=cjs --platform=node --tsconfig=tsconfig.extension.json",
     "build": "npm run build:extension && npm run build:webview",
     "lint": "eslint .",
     "preview": "vite preview",
@@ -72,6 +58,8 @@
     "@blocknote/react": "^0.52.1",
     "@mantine/core": "^9.4.2",
     "@mantine/hooks": "^9.4.2",
+    "@vscode/ripgrep": "^1.18.0",
+    "fast-glob": "^3.3.3",
     "mermaid": "^11.16.0",
     "openai": "^4.104.0",
     "react": "^19.2.6",
@@ -83,7 +71,7 @@
     "@types/node": "^24.12.3",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
-    "@types/vscode": "^1.120.0",
+    "@types/vscode": "^1.125.0",
     "@vitejs/plugin-react": "^6.0.1",
     "esbuild": "^0.28.0",
     "eslint": "^10.3.0",

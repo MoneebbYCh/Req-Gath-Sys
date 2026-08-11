@@ -1,14 +1,16 @@
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import * as fs from 'fs'
 import * as path from 'path'
+import fg from 'fast-glob'
 import { LEGACY_STATE_DIR, STATE_DIR } from '../brand'
 import { loadDocTypes, saveDocTypes, saveForm } from '../formStateManager'
-import { retrieve } from './retrieval'
-import type { EmbeddingConfig } from './embeddings'
 import { normalizeMermaidSource, parseMermaid } from './mermaidValidate'
+
+const execFileAsync = promisify(execFile)
 
 export interface ToolContext {
   workspaceRoot: string
-  embedCfg: EmbeddingConfig
   /** Called after generate_pipeline writes doc-types.json so the webview can refresh. */
   onDocTypesChanged?: (data: unknown[], mode: 'merge' | 'replace') => void
 }
@@ -16,13 +18,11 @@ export interface ToolContext {
 const IGNORE_DIRS = new Set([
   'node_modules', 'dist', 'out', '.git', STATE_DIR, LEGACY_STATE_DIR, '.vscode',
 ])
-const SUPPORTED =
-  /\.(ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|rb|php|swift|kt|kts|scala|sh|bash|zsh|ps1|md|mdx|json|yaml|yml|toml|css|scss|html|htm|sql)$/i
 
-const MAX_READ_LINES = 200
-const MAX_GREP_MATCHES = 40
-const MAX_GREP_FILES = 4000
-const MAX_OBS_CHARS = 6000
+const MAX_READ_LINES = 2000
+const MAX_GREP_MATCHES = 50
+const MAX_GLOB_RESULTS = 50
+const MAX_OBS_CHARS = 12_000
 const MAX_MERMAID_CHARS = 8000
 const MAX_PIPELINE_DOCS = 12
 const PIPELINE_ICONS = new Set([
@@ -61,9 +61,9 @@ interface StoredCustomDocType {
 }
 
 export const TOOL_NAMES = [
-  'semantic_search',
-  'read_file',
+  'glob',
   'grep',
+  'read_file',
   'list_dir',
   'validate_mermaid',
   'list_pipeline',
@@ -74,10 +74,29 @@ export const TOOL_NAMES = [
 /** Human-readable tool catalog for the agent system prompt. */
 export const TOOL_CATALOG = `AVAILABLE TOOLS (call one per step):
 Codebase tools (user's open workspace folder):
-- list_dir { "path": string }  -> explore folders (start with "." or "src")
-- grep { "pattern": string, "glob"?: string }  -> regex matches across the codebase
-- read_file { "path": string, "start"?: number, "end"?: number }  -> file contents (max ${MAX_READ_LINES} lines)
-- semantic_search { "query": string, "k"?: number }  -> ranked code by meaning (may be empty if embeddings are offline; then use grep/list_dir/read_file instead)
+- list_dir { "path"?: string }  -> list one directory level (orientation; start with "." or "src")
+- glob { "pattern": string, "max_results"?: number }  -> find files by name/path pattern (e.g. "src/**/*.ts"); does NOT search file contents
+- grep { "pattern": string, "path"?: string, "case_insensitive"?: boolean }  -> regex search inside file contents (optional path/dir to narrow)
+- read_file { "path": string, "line_start"?: number, "line_end"?: number }  -> read a known file (optional line range; max ${MAX_READ_LINES} lines)
+
+When exploring the codebase:
+- Start with list_dir if you don't know the project structure yet.
+- Use glob when you know a filename pattern (e.g. "*.test.ts") but not content.
+- Use grep when you know text/symbols to search for but not which file.
+- Use read_file only once you have a specific path — don't grep a file you could just read.
+- Prefer narrow searches over broad ones. If a search returns too many results, narrow the pattern rather than reading everything.
+- For a specific named symbol/file/function: stop once you have enough evidence to answer.
+- For category / inventory / "what does X do" / "where is AI" / "is that everything" questions: do NOT stop after 2–3 good concept matches. Finding solid examples ≠ finding everything.
+
+SEARCH DISCIPLINE (category & enumeration questions):
+- Concept words ("agent", "chatbot", "AI") are guesses and miss features that use different vocabulary.
+- Always do a second, broader pass grepping for mechanical SDK/library anchors every LLM-touching file must contain, for example:
+  openai | OpenAI | chat.completions | embeddings.create | text-embedding
+  mistral | @mistralai | anthropic | @anthropic | langchain
+  chromadb | ChromaClient | vectorStore
+  Also glob for *Service* / *Controller* / *Routes* names that look AI-related if the first pass is thin.
+- Before finalizing an enumeration-style chat answer, explicitly list the search patterns you tried (so gaps are visible). Never silently assume coverage.
+- If the user asked for chat-only (no document), put the full inventory in "message" and set document:null.
 
 Diagram tool (use when the document needs a Mermaid diagram):
 - validate_mermaid { "code": string, "title"?: string }  -> parse-check your Mermaid; on success returns a ready diagram block JSON to put in "document". Reason about the codebase (or chat) first, then draft Mermaid yourself and validate here — do NOT invent from a fixed template.
@@ -103,52 +122,151 @@ function safeResolve(workspaceRoot: string, rel: string): string | null {
   return abs
 }
 
-function globToRegExp(glob: string): RegExp {
-  const escaped = glob
-    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
-    .replace(/\*\*/g, '\u0000')
-    .replace(/\*/g, '[^/]*')
-    .replace(/\u0000/g, '.*')
-    .replace(/\?/g, '.')
-  return new RegExp(escaped)
+function toWorkspaceRel(workspaceRoot: string, absOrRel: string): string {
+  if (path.isAbsolute(absOrRel)) {
+    return path.relative(workspaceRoot, absOrRel) || '.'
+  }
+  return absOrRel.replace(/\\/g, '/')
 }
 
-function walkFiles(workspaceRoot: string, onFile: (abs: string, rel: string) => boolean): void {
-  const walk = (dir: string): boolean => {
-    let entries: fs.Dirent[]
-    try {
-      entries = fs.readdirSync(dir, { withFileTypes: true })
-    } catch {
-      return true
+let cachedRgPath: string | null | undefined
+
+async function resolveRgPath(): Promise<string | null> {
+  if (cachedRgPath !== undefined) return cachedRgPath
+  try {
+    const mod = await import('@vscode/ripgrep')
+    if (mod.rgPath && fs.existsSync(mod.rgPath)) {
+      cachedRgPath = mod.rgPath
+      return cachedRgPath
     }
-    for (const entry of entries) {
-      if (IGNORE_DIRS.has(entry.name)) continue
-      const abs = path.join(dir, entry.name)
-      if (entry.isDirectory()) {
-        if (!walk(abs)) return false
-      } else if (entry.isFile() && SUPPORTED.test(entry.name)) {
-        const rel = path.relative(workspaceRoot, abs)
-        if (!onFile(abs, rel)) return false
+  } catch {
+    /* bundled binary unavailable */
+  }
+  cachedRgPath = 'rg'
+  return cachedRgPath
+}
+
+interface RgMatch {
+  file: string
+  line: number
+  text: string
+}
+
+function parseRipgrepJson(stdout: string, workspaceRoot: string): RgMatch[] {
+  const matches: RgMatch[] = []
+  for (const line of stdout.split('\n')) {
+    if (!line.trim()) continue
+    try {
+      const evt = JSON.parse(line) as {
+        type?: string
+        data?: {
+          path?: { text?: string }
+          line_number?: number
+          lines?: { text?: string }
+        }
+      }
+      if (evt.type !== 'match' || !evt.data) continue
+      const fileAbs = evt.data.path?.text ?? ''
+      const lineNo = evt.data.line_number ?? 0
+      const text = (evt.data.lines?.text ?? '').replace(/\n$/, '')
+      if (!fileAbs || !lineNo) continue
+      matches.push({
+        file: toWorkspaceRel(workspaceRoot, fileAbs),
+        line: lineNo,
+        text: text.trim().slice(0, 200),
+      })
+      if (matches.length >= MAX_GREP_MATCHES) break
+    } catch {
+      /* skip malformed */
+    }
+  }
+  return matches
+}
+
+async function globTool(ctx: ToolContext, args: Record<string, unknown>): Promise<string> {
+  const pattern = String(args.pattern ?? '').trim()
+  if (!pattern) return 'error: "pattern" is required'
+  const maxResults = clampInt(args.max_results, MAX_GLOB_RESULTS, 1, 200)
+
+  const files = await fg(pattern, {
+    cwd: ctx.workspaceRoot,
+    dot: false,
+    gitignore: true,
+    onlyFiles: true,
+    absolute: false,
+    suppressErrors: true,
+    ignore: [...IGNORE_DIRS].map((d) => `**/${d}/**`),
+  })
+
+  const truncated = files.length > maxResults
+  const slice = files.slice(0, maxResults)
+  if (slice.length === 0) return 'No files matched.'
+  const lines = [
+    `${slice.length} file(s)${truncated ? ` (truncated; ${files.length} total — narrow the pattern)` : ''}:`,
+    ...slice.map((f) => `- ${f}`),
+  ]
+  return lines.join('\n')
+}
+
+async function grepTool(ctx: ToolContext, args: Record<string, unknown>): Promise<string> {
+  const pattern = String(args.pattern ?? '')
+  if (!pattern) return 'error: "pattern" is required'
+
+  const searchPathRaw = String(args.path ?? args.glob ?? '.').trim() || '.'
+  const searchAbs = safeResolve(ctx.workspaceRoot, searchPathRaw)
+  if (!searchAbs) return 'error: path is outside the workspace'
+
+  const caseInsensitive =
+    args.case_insensitive === true ||
+    args.case_insensitive === 'true' ||
+    args.caseInsensitive === true
+
+  const rg = await resolveRgPath()
+  if (!rg) return 'error: ripgrep is unavailable'
+
+  const rgArgs = [
+    '--json',
+    '--max-count',
+    String(MAX_GREP_MATCHES),
+    '--glob',
+    '!**/node_modules/**',
+    '--glob',
+    '!**/dist/**',
+    '--glob',
+    '!**/out/**',
+    '--glob',
+    `!**/${STATE_DIR}/**`,
+    '--glob',
+    `!**/${LEGACY_STATE_DIR}/**`,
+  ]
+  if (caseInsensitive) rgArgs.push('-i')
+  rgArgs.push('--', pattern, searchAbs)
+
+  try {
+    const { stdout } = await execFileAsync(rg, rgArgs, {
+      maxBuffer: 2 * 1024 * 1024,
+      cwd: ctx.workspaceRoot,
+    })
+    const matches = parseRipgrepJson(stdout, ctx.workspaceRoot)
+    if (matches.length === 0) return 'No matches.'
+    const truncated = matches.length >= MAX_GREP_MATCHES
+    const body = matches.map((m) => `${m.file}:${m.line}: ${m.text}`).join('\n')
+    return truncated ? `${body}\n…(truncated at ${MAX_GREP_MATCHES} matches — narrow the pattern)` : body
+  } catch (err: unknown) {
+    const e = err as { code?: number | string; stdout?: string; message?: string }
+    // rg exit code 1 = no matches
+    if (e.code === 1) return 'No matches.'
+    if (e.stdout) {
+      const matches = parseRipgrepJson(e.stdout, ctx.workspaceRoot)
+      if (matches.length > 0) {
+        return matches.map((m) => `${m.file}:${m.line}: ${m.text}`).join('\n')
       }
     }
-    return true
+    if (e.code === 'ENOENT') {
+      return 'error: ripgrep binary not found'
+    }
+    return `error: grep failed: ${e.message ?? String(err)}`
   }
-  walk(workspaceRoot)
-}
-
-async function semanticSearch(ctx: ToolContext, args: Record<string, unknown>): Promise<string> {
-  const query = String(args.query ?? '').trim()
-  if (!query) return 'error: "query" is required'
-  const k = clampInt(args.k, 8, 1, 15)
-  const hits = await retrieve(ctx.workspaceRoot, query, k, ctx.embedCfg)
-  if (hits.length === 0) return 'No results (index empty or embeddings unavailable).'
-  return hits
-    .map(
-      (h) =>
-        `- ${h.file}:${h.startLine}-${h.endLine}` +
-        `${h.symbol && h.symbol !== 'block' ? ' ' + h.symbol : ''} (score ${h.score.toFixed(3)})`,
-    )
-    .join('\n')
 }
 
 function readFileTool(ctx: ToolContext, args: Record<string, unknown>): string {
@@ -163,48 +281,39 @@ function readFileTool(ctx: ToolContext, args: Record<string, unknown>): string {
     return `error: cannot read ${rel}`
   }
   const lines = content.split('\n')
-  const start = clampInt(args.start, 1, 1, Math.max(1, lines.length))
-  let end = clampInt(args.end, Math.min(lines.length, start + MAX_READ_LINES - 1), start, lines.length)
+  const hasRange =
+    args.line_start != null ||
+    args.line_end != null ||
+    args.start != null ||
+    args.end != null
+
+  if (!hasRange) {
+    if (lines.length > MAX_READ_LINES) {
+      const numbered = lines
+        .slice(0, MAX_READ_LINES)
+        .map((l, i) => `${i + 1}\t${l}`)
+        .join('\n')
+      return `${rel}:1-${MAX_READ_LINES}\n${numbered}\n\n[truncated — file has ${lines.length} lines; use line_start/line_end]`
+    }
+    const numbered = lines.map((l, i) => `${i + 1}\t${l}`).join('\n')
+    return `${rel}:1-${lines.length}\n${numbered}`
+  }
+
+  const start = clampInt(
+    args.line_start ?? args.start,
+    1,
+    1,
+    Math.max(1, lines.length),
+  )
+  let end = clampInt(
+    args.line_end ?? args.end,
+    Math.min(lines.length, start + MAX_READ_LINES - 1),
+    start,
+    lines.length,
+  )
   if (end - start + 1 > MAX_READ_LINES) end = start + MAX_READ_LINES - 1
   const numbered = lines.slice(start - 1, end).map((l, i) => `${start + i}\t${l}`).join('\n')
   return `${rel}:${start}-${end}\n${numbered}`
-}
-
-function grepTool(ctx: ToolContext, args: Record<string, unknown>): string {
-  const pattern = String(args.pattern ?? '')
-  if (!pattern) return 'error: "pattern" is required'
-  let re: RegExp
-  try {
-    re = new RegExp(pattern, 'i')
-  } catch {
-    return 'error: invalid regular expression'
-  }
-  const globRe = args.glob ? globToRegExp(String(args.glob)) : null
-  const matches: string[] = []
-  let scanned = 0
-
-  walkFiles(ctx.workspaceRoot, (abs, rel) => {
-    if (scanned >= MAX_GREP_FILES) return false
-    scanned++
-    if (globRe && !globRe.test(rel)) return true
-    let text: string
-    try {
-      text = fs.readFileSync(abs, 'utf-8')
-    } catch {
-      return true
-    }
-    const lines = text.split('\n')
-    for (let i = 0; i < lines.length; i++) {
-      if (re.test(lines[i])) {
-        matches.push(`${rel}:${i + 1}: ${lines[i].trim().slice(0, 200)}`)
-        if (matches.length >= MAX_GREP_MATCHES) return false
-      }
-    }
-    return true
-  })
-
-  if (matches.length === 0) return 'No matches.'
-  return matches.join('\n')
 }
 
 function listDirTool(ctx: ToolContext, args: Record<string, unknown>): string {
@@ -217,11 +326,15 @@ function listDirTool(ctx: ToolContext, args: Record<string, unknown>): string {
   } catch {
     return `error: cannot list ${rel}`
   }
-  return entries
+  const rows = entries
     .filter((e) => !IGNORE_DIRS.has(e.name))
-    .map((e) => (e.isDirectory() ? `${e.name}/` : e.name))
-    .sort()
-    .join('\n')
+    .map((e) => ({ name: e.name, type: e.isDirectory() ? 'dir' : 'file' }))
+    .sort((a, b) => {
+      if (a.type !== b.type) return a.type === 'dir' ? -1 : 1
+      return a.name.localeCompare(b.name)
+    })
+  if (rows.length === 0) return '(empty)'
+  return rows.map((r) => `${r.type === 'dir' ? 'dir ' : 'file'} ${r.name}${r.type === 'dir' ? '/' : ''}`).join('\n')
 }
 
 /**
@@ -472,14 +585,14 @@ export async function runTool(
   let out: string
   try {
     switch (name) {
-      case 'semantic_search':
-        out = await semanticSearch(ctx, args)
+      case 'glob':
+        out = await globTool(ctx, args)
         break
       case 'read_file':
         out = readFileTool(ctx, args)
         break
       case 'grep':
-        out = grepTool(ctx, args)
+        out = await grepTool(ctx, args)
         break
       case 'list_dir':
         out = listDirTool(ctx, args)

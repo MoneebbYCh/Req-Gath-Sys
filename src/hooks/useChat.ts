@@ -17,20 +17,36 @@ function nextId(): string {
 }
 
 const WELCOME: ChatMessage = {
-  id: nextId(),
+  id: 'chat-welcome',
   role: 'assistant',
   text: `Hello! I'm your ${BRAND_NAME} assistant. From Home I can read this codebase and generate a document pipeline for the project. On a document page I can draft the canvas. Configure your API key first (command palette: ${BRAND_NAME}: Configure API Key), then ask away!`,
   timestamp: Date.now(),
 }
 
+/** How many prior UI turns to send (each user or assistant bubble counts as one). */
+const MAX_HISTORY_MESSAGES = 12
+/** Cap each prior bubble so context stays bounded. */
+const MAX_HISTORY_CHARS = 2_000
+
 // Agentic chat can make several tool + LLM round-trips, so allow generous time.
 const TIMEOUT_MS = 180_000
+
+function buildHistoryPayload(messages: ChatMessage[]): Array<{ role: 'user' | 'assistant'; text: string }> {
+  return messages
+    .filter((m) => m.id !== WELCOME.id)
+    .slice(-MAX_HISTORY_MESSAGES)
+    .map((m) => ({
+      role: m.role,
+      text: m.text.length > MAX_HISTORY_CHARS ? `${m.text.slice(0, MAX_HISTORY_CHARS)}\n…(truncated)` : m.text,
+    }))
+    .filter((m) => m.text.trim().length > 0)
+}
 
 export function useChat(phase: string) {
   const [isOpen, setIsOpen] = useState(false)
   const [messages, setMessages] = useState<ChatMessage[]>([WELCOME])
   const [isTyping, setIsTyping] = useState(false)
-  /** Interim status from the extension (lazy index sync, thinking, …). */
+  /** Interim status from the extension (thinking, tool progress, …). */
   const [statusText, setStatusText] = useState<string | null>(null)
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -87,6 +103,9 @@ export function useChat(phase: string) {
         timestamp: Date.now(),
       }
 
+      // Snapshot prior turns before appending the new user message.
+      const history = buildHistoryPayload(messages)
+
       setMessages((prev) => [...prev, userMsg])
 
       if (!vscode) {
@@ -102,7 +121,7 @@ export function useChat(phase: string) {
 
       setIsTyping(true)
       setStatusText(null)
-      vscode.postMessage({ type: 'chatMessage', text: trimmed, phase })
+      vscode.postMessage({ type: 'chatMessage', text: trimmed, phase, history })
 
       clearTimeout_()
       timeoutRef.current = setTimeout(() => {
@@ -117,14 +136,14 @@ export function useChat(phase: string) {
         setMessages((prev) => [...prev, timeoutMsg])
       }, TIMEOUT_MS)
     },
-    [phase, clearTimeout_]
+    [phase, messages, clearTimeout_]
   )
 
   const clearMessages = useCallback(() => {
     clearTimeout_()
     setIsTyping(false)
     setStatusText(null)
-    setMessages([WELCOME])
+    setMessages([{ ...WELCOME, timestamp: Date.now() }])
   }, [clearTimeout_])
 
   return {

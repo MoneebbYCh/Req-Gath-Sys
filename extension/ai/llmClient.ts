@@ -24,27 +24,6 @@ export const PROVIDERS: Record<string, ProviderInfo> = {
   },
 }
 
-export interface EmbeddingProviderInfo {
-  baseUrl: string
-  defaultModel: string
-  /** Env var holding the API key, if the provider needs one. */
-  env: string
-}
-
-/** Providers used for code embeddings (separate from the chat model). */
-export const EMBEDDING_PROVIDERS: Record<string, EmbeddingProviderInfo> = {
-  ollama: {
-    baseUrl: 'http://localhost:11434/v1',
-    defaultModel: 'nomic-embed-text',
-    env: '',
-  },
-  openai: {
-    baseUrl: 'https://api.openai.com/v1',
-    defaultModel: 'text-embedding-3-small',
-    env: 'OPENAI_API_KEY',
-  },
-}
-
 // Checked after the provider-specific variable above.
 const GENERIC_ENV_VARS = ['REQ_GATH_SYS_API_KEY', 'LLM_API_KEY'] as const
 
