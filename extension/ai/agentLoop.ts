@@ -4,8 +4,16 @@ import { runTool, TOOL_CATALOG } from './tools'
 import type { ChatHistoryTurn } from '../protocol'
 
 const MAX_ITERS = 15
+/** Start injecting remaining-budget notices into observations after this many tool turns. */
+const BUDGET_WARN_AFTER = 10
 const MAX_HISTORY_MESSAGES = 12
 const MAX_HISTORY_CHARS = 2_000
+
+const SEARCH_FLOW_RULES = `CODEBASE SEARCH RULES:
+- Default order: list_dir (orient) → glob (candidate files by name/path/preset) → grep (candidate lines; use patterns:[...] for synonyms) → read_file (confirm). Do not jump to read_file on a guessed path, and do not grep before you have any sense of folder structure (unless prior turns already oriented you).
+- Zero hits ≠ absent. If grep/glob returns nothing, retry with a different phrasing (synonym, abbreviation, alternate casing, SDK import) before concluding something is missing. Require at least 2 different query attempts before stating a feature/file/symbol is not in the codebase.
+- No claim without a citation. Every factual claim in a draft or inventory answer must trace to a specific read_file observation (cite path:line). Grep snippets are leads, not proof.
+- Watch the tool budget. When observations note iterations remaining, prioritize closing out with what you have over open-ended exploration.`
 
 export interface AgentLoopArgs {
   text: string
@@ -42,15 +50,17 @@ CRITICAL — never claim you created a pipeline document unless you called gener
 CRITICAL — never claim you populated/wrote a document unless you returned it in "document" with "targetDoc" set to that doc's id or exact name. Home chat does not magically fill tiles.
 CRITICAL — when prior conversation turns are included above the latest USER message, treat them as short-term memory: continue coherently, do not pretend the earlier exchange did not happen, and build on prior findings instead of starting from scratch.
 
+${SEARCH_FLOW_RULES}
+
 WORKFLOW:
-1. Investigate with tools: list_dir → glob / grep → read_file (or reason from chat if there is little/no code).
-2. For category questions (what AI features exist, where is X used, inventory of a capability): after concept greps, do a second pass on SDK/import anchors (openai, mistral, anthropic, chromadb, embeddings, chat.completions, etc.). Do not treat 2–3 solid hits as complete.
+1. Investigate with tools in order: list_dir → glob → grep → read_file (or reason from chat if there is little/no code).
+2. For category questions (what AI features exist, where is X used, inventory of a capability): after concept greps, do a second pass on SDK/import anchors (openai, mistral, anthropic, chromadb, embeddings, chat.completions, etc.) — prefer one grep with patterns:[...]. Do not treat 2–3 solid hits as complete.
 3. If the user asks what docs exist → list_pipeline, then answer from the observation.
 4. If creating / adding doc slots → generate_pipeline with mode "append" (or "replace" only when they want a full rebuild).
 5. If removing/changing slots → list_pipeline if needed, then remove_pipeline_docs and/or generate_pipeline with mode "replace".
 6. If the user asks you to create AND draft a document:
    a) generate_pipeline (append) for the new name(s) if they are not already on the pipeline.
-   b) Research as needed; validate_mermaid for diagrams.
+   b) Research as needed; validate_mermaid for diagrams. Cite read_file path:line for factual claims.
    c) Finish with document=[BlockNote blocks] AND targetDoc="<id or exact name from the tool observation>".
 7. If drafting an existing doc only: list_pipeline → research → finish with document + targetDoc.
 8. Otherwise finish with document:null and no targetDoc.
@@ -74,15 +84,17 @@ HARD CONSTRAINTS:
 You HAVE LIVE ACCESS to the user's open workspace via tools. You can list directories, grep, and read real files.
 You can also manage the Home pipeline (create/list/remove document slots) with the pipeline tools.
 
-CRITICAL — never claim you cannot read the codebase. Never tell the user to paste code or run external commands instead of using your tools. If the user asks you to read/analyze the code, your FIRST response must be a tool call (usually list_dir, glob, or grep).
+CRITICAL — never claim you cannot read the codebase. Never tell the user to paste code or run external commands instead of using your tools. If the user asks you to read/analyze the code, your FIRST response must be a tool call (usually list_dir, then glob or grep).
 CRITICAL — to add a NEW document to the Home pipeline, you MUST call generate_pipeline (do not invent tiles).
 CRITICAL — if drafting a doc other than the one currently open, finish with targetDoc set to that doc's id or exact name (after generate_pipeline / list_pipeline).
 CRITICAL — when prior conversation turns are included above the latest USER message, treat them as short-term memory: continue coherently and build on earlier findings.
 
+${SEARCH_FLOW_RULES}
+
 WORKFLOW:
-1. Investigate with tools when a codebase is available: list_dir → glob / grep → read_file.
-2. Ground claims in real code and cite file:line. If there is little/no code, reason from the chat and requirements instead.
-3. For category / inventory questions (AI features, integrations, "where is X used"): after concept greps, run a second pass on SDK/import anchors (openai, mistral, anthropic, chromadb, embeddings, chat.completions, etc.). Do not stop after 2–3 good concept matches — those are examples, not coverage.
+1. Investigate with tools when a codebase is available: list_dir → glob → grep → read_file.
+2. Ground every factual claim in a read_file observation and cite path:line. Grep is for finding candidates only. If there is little/no code, reason from the chat and requirements instead.
+3. For category / inventory questions (AI features, integrations, "where is X used"): after concept greps, run a second pass on SDK/import anchors (openai, mistral, anthropic, chromadb, embeddings, chat.completions, etc.) via patterns:[...]. Do not stop after 2–3 good concept matches — those are examples, not coverage.
 4. If the user wants a new pipeline document: generate_pipeline (append) first, then draft with targetDoc pointing at the new id/name.
 5. When the document needs a diagram: draft Mermaid yourself from that understanding, then call validate_mermaid. Fix and re-validate if it fails. Do not skip validation for diagrams you include.
 6. When you have enough evidence, output the final document JSON (include validated diagram blocks). For the open canvas you may omit targetDoc; for any other/new doc you must set targetDoc.
@@ -412,7 +424,15 @@ export async function runAgentLoop(args: AgentLoopArgs): Promise<AgentLoopResult
     }
 
     if (step?.tool) {
-      const observation = await runTool(step.tool, step.args ?? {}, ctx)
+      let observation = await runTool(step.tool, step.args ?? {}, ctx)
+      // After BUDGET_WARN_AFTER tool turns, remind the model how many iterations remain.
+      const toolsUsed = iter + 1
+      const remaining = MAX_ITERS - toolsUsed
+      if (toolsUsed >= BUDGET_WARN_AFTER && remaining > 0) {
+        observation = `${observation}\n\n[BUDGET: ${remaining} tool iteration(s) remaining of ${MAX_ITERS} — prioritize closing out on evidence you already have; avoid open-ended exploration.]`
+      } else if (remaining === 0) {
+        observation = `${observation}\n\n[BUDGET: last tool iteration used — next response MUST be final JSON (no more tool calls).]`
+      }
       messages.push({ role: 'assistant', content: raw })
       messages.push({
         role: 'user',

@@ -19255,6 +19255,9 @@ var MAX_GLOB_RESULTS = 50;
 var MAX_OBS_CHARS = 12e3;
 var MAX_MERMAID_CHARS = 8e3;
 var MAX_PIPELINE_DOCS = 12;
+var MAX_LIST_DIR_CHILDREN = 40;
+var GREP_CONTEXT_LINES = 1;
+var RELEVANT_DIR_RE = /^(src|lib|libs|api|app|apps|server|servers|backend|frontend|extension|packages|services|service|controllers|routes|core|internal|agent|agents|ai|auth|db|data|models|handlers|middleware|utils|helpers|components|pages|views|hooks)$/i;
 var PIPELINE_ICONS = /* @__PURE__ */ new Set([
   "article",
   "draft",
@@ -19275,20 +19278,73 @@ var PIPELINE_ICONS = /* @__PURE__ */ new Set([
   "rocket_launch",
   "bar_chart"
 ]);
+var GLOB_PRESETS = {
+  config: [
+    "**/package.json",
+    "**/tsconfig*.json",
+    "**/jsconfig*.json",
+    "**/.env*",
+    "**/vite.config.*",
+    "**/webpack.config.*",
+    "**/next.config.*",
+    "**/nuxt.config.*",
+    "**/pyproject.toml",
+    "**/Cargo.toml",
+    "**/go.mod",
+    "**/requirements*.txt",
+    "**/Dockerfile*",
+    "**/docker-compose*.{yml,yaml}",
+    "**/.github/workflows/*.{yml,yaml}"
+  ],
+  "entry points": [
+    "**/index.{ts,tsx,js,jsx,mjs,cjs}",
+    "**/main.{ts,tsx,js,jsx,mjs,cjs,py,go}",
+    "**/app.{ts,tsx,js,jsx}",
+    "**/server.{ts,tsx,js,jsx}",
+    "**/extension.{ts,js}",
+    "**/__init__.py",
+    "**/cmd/**/main.go"
+  ],
+  entry_points: [
+    "**/index.{ts,tsx,js,jsx,mjs,cjs}",
+    "**/main.{ts,tsx,js,jsx,mjs,cjs,py,go}",
+    "**/app.{ts,tsx,js,jsx}",
+    "**/server.{ts,tsx,js,jsx}",
+    "**/extension.{ts,js}",
+    "**/__init__.py",
+    "**/cmd/**/main.go"
+  ],
+  tests: [
+    "**/*.{test,spec}.{ts,tsx,js,jsx}",
+    "**/__tests__/**",
+    "**/tests/**/*.{ts,tsx,js,jsx,py}",
+    "**/test_*.py",
+    "**/*_test.go"
+  ]
+};
 var TOOL_CATALOG = `AVAILABLE TOOLS (call one per step):
 Codebase tools (user's open workspace folder):
-- list_dir { "path"?: string }  -> list one directory level (orientation; start with "." or "src")
-- glob { "pattern": string, "max_results"?: number }  -> find files by name/path pattern (e.g. "src/**/*.ts"); does NOT search file contents
-- grep { "pattern": string, "path"?: string, "case_insensitive"?: boolean }  -> regex search inside file contents (optional path/dir to narrow)
-- read_file { "path": string, "line_start"?: number, "line_end"?: number }  -> read a known file (optional line range; max ${MAX_READ_LINES} lines)
+- list_dir { "path"?: string, "depth"?: 1|2 }  -> list directory tree (default depth 2 with per-subfolder file counts; flags \u2605relevant folders like src/lib/api/agent*). Start with "." .
+- glob { "pattern"?: string, "preset"?: "config"|"entry points"|"tests", "max_results"?: number }  -> find files by name/path. Prefer preset for common intents; use pattern for custom globs (e.g. "src/**/*.ts"). Does NOT search file contents. Reports how many hits .gitignore hid.
+- grep { "pattern"?: string, "patterns"?: string[], "path"?: string, "case_sensitive"?: boolean }  -> regex search in file contents. Default is case-insensitive (set case_sensitive:true to tighten). Pass patterns:[...] to search several phrasings in one call (results grouped). Returns \xB11 line of context. Cap ${MAX_GREP_MATCHES}/pattern \u2014 when hit, observation says so and suggests narrowing.
+- read_file { "path": string, "line_start"?: number, "line_end"?: number }  -> read a known file (optional line range; max ${MAX_READ_LINES} lines). Truncation is explicit ("truncated at line X of N").
 
-When exploring the codebase:
-- Start with list_dir if you don't know the project structure yet.
-- Use glob when you know a filename pattern (e.g. "*.test.ts") but not content.
-- Use grep when you know text/symbols to search for but not which file.
-- Use read_file only once you have a specific path \u2014 don't grep a file you could just read.
-- Prefer narrow searches over broad ones. If a search returns too many results, narrow the pattern rather than reading everything.
-- For a specific named symbol/file/function: stop once you have enough evidence to answer.
+DEFAULT SEARCH ORDER (follow unless you already know the path):
+1. list_dir \u2014 orient on folder structure
+2. glob \u2014 candidate files by name/path/preset
+3. grep \u2014 candidate lines by content (use patterns:[...] for synonyms in one call)
+4. read_file \u2014 confirm with full context before claiming facts
+
+ZERO HITS \u2260 ABSENT:
+- If grep/glob returns nothing, retry with a different phrasing (synonym, abbreviation, alternate casing, SDK import name) before concluding something is missing.
+- Require at least 2 different query attempts before stating a feature/file/symbol is not in the codebase.
+
+CITATIONS:
+- Every factual claim in a draft or inventory answer must trace to a specific read_file observation (cite path:line). Do not assert from grep snippets alone.
+
+When exploring:
+- Prefer narrow searches over broad ones. If a search hits the match cap, narrow by directory or file type rather than reading everything.
+- For a specific named symbol/file/function: stop once you have enough evidence (with at least one read_file).
 - For category / inventory / "what does X do" / "where is AI" / "is that everything" questions: do NOT stop after 2\u20133 good concept matches. Finding solid examples \u2260 finding everything.
 
 SEARCH DISCIPLINE (category & enumeration questions):
@@ -19297,6 +19353,7 @@ SEARCH DISCIPLINE (category & enumeration questions):
   openai | OpenAI | chat.completions | embeddings.create | text-embedding
   mistral | @mistralai | anthropic | @anthropic | langchain
   chromadb | ChromaClient | vectorStore
+  Prefer one grep with patterns:[...] covering those anchors.
   Also glob for *Service* / *Controller* / *Routes* names that look AI-related if the first pass is thin.
 - Before finalizing an enumeration-style chat answer, explicitly list the search patterns you tried (so gaps are visible). Never silently assume coverage.
 - If the user asked for chat-only (no document), put the full inventory in "message" and set document:null.
@@ -19328,6 +19385,34 @@ function toWorkspaceRel(workspaceRoot, absOrRel) {
   }
   return absOrRel.replace(/\\/g, "/");
 }
+function normalizeRel(rel) {
+  return rel.replace(/\\/g, "/") || ".";
+}
+function isRelevantDirName(name) {
+  if (RELEVANT_DIR_RE.test(name)) return true;
+  return /^agent/i.test(name) || /^api/i.test(name);
+}
+function grepRelevanceScore(file) {
+  const lower = file.toLowerCase().replace(/\\/g, "/");
+  let score = 0;
+  if (/\.(test|spec)\.[^.]+$/.test(lower) || /\/(__tests__|tests?|specs?)\//.test(lower) || /\/test_/.test(lower)) {
+    score += 100;
+  }
+  if (/(^|\/)(node_modules|vendor|third[-_]?party|dist|out|build|coverage)(\/|$)/.test(lower)) {
+    score += 200;
+  }
+  score += lower.split("/").filter(Boolean).length;
+  return score;
+}
+function sortGrepMatches(matches) {
+  return [...matches].sort((a2, b2) => {
+    const sa = grepRelevanceScore(a2.file);
+    const sb = grepRelevanceScore(b2.file);
+    if (sa !== sb) return sa - sb;
+    if (a2.file !== b2.file) return a2.file.localeCompare(b2.file);
+    return a2.line - b2.line;
+  });
+}
 var cachedRgPath;
 async function resolveRgPath() {
   if (cachedRgPath !== void 0) return cachedRgPath;
@@ -19342,63 +19427,177 @@ async function resolveRgPath() {
   cachedRgPath = "rg";
   return cachedRgPath;
 }
-function parseRipgrepJson(stdout, workspaceRoot) {
-  const matches = [];
+function parseRipgrepJson(stdout, workspaceRoot, maxMatches) {
+  const events = [];
   for (const line of stdout.split("\n")) {
     if (!line.trim()) continue;
     try {
       const evt = JSON.parse(line);
-      if (evt.type !== "match" || !evt.data) continue;
+      if (evt.type !== "match" && evt.type !== "context" || !evt.data) continue;
       const fileAbs = evt.data.path?.text ?? "";
       const lineNo = evt.data.line_number ?? 0;
       const text = (evt.data.lines?.text ?? "").replace(/\n$/, "");
       if (!fileAbs || !lineNo) continue;
-      matches.push({
+      events.push({
         file: toWorkspaceRel(workspaceRoot, fileAbs),
         line: lineNo,
-        text: text.trim().slice(0, 200)
+        text: text.trimEnd().slice(0, 200),
+        kind: evt.type === "match" ? "match" : "context"
       });
-      if (matches.length >= MAX_GREP_MATCHES) break;
     } catch {
     }
   }
-  return matches;
+  const matches = [];
+  for (let i2 = 0; i2 < events.length; i2++) {
+    const e2 = events[i2];
+    if (e2.kind !== "match") continue;
+    if (matches.length >= maxMatches) break;
+    const before = [];
+    for (let j2 = i2 - 1; j2 >= 0 && before.length < GREP_CONTEXT_LINES; j2--) {
+      const prev = events[j2];
+      if (prev.file !== e2.file) break;
+      if (prev.line >= e2.line) continue;
+      if (e2.line - prev.line > GREP_CONTEXT_LINES + 1) break;
+      before.unshift({ line: prev.line, text: prev.text });
+    }
+    const after = [];
+    for (let j2 = i2 + 1; j2 < events.length && after.length < GREP_CONTEXT_LINES; j2++) {
+      const next = events[j2];
+      if (next.file !== e2.file) break;
+      if (next.line <= e2.line) continue;
+      if (next.line - e2.line > GREP_CONTEXT_LINES + 1) break;
+      after.push({ line: next.line, text: next.text });
+    }
+    matches.push({ file: e2.file, line: e2.line, text: e2.text, before, after });
+  }
+  return sortGrepMatches(matches);
+}
+function formatGrepMatch(m2) {
+  const lines = [];
+  for (const b2 of m2.before) lines.push(`${m2.file}:${b2.line}:  ${b2.text}`);
+  lines.push(`${m2.file}:${m2.line}:> ${m2.text}`);
+  for (const a2 of m2.after) lines.push(`${m2.file}:${a2.line}:  ${a2.text}`);
+  return lines.join("\n");
+}
+function loadGitignoreIgnorePatterns(workspaceRoot) {
+  const giPath = path2.join(workspaceRoot, ".gitignore");
+  if (!fs2.existsSync(giPath)) return [];
+  let text;
+  try {
+    text = fs2.readFileSync(giPath, "utf-8");
+  } catch {
+    return [];
+  }
+  const patterns = [];
+  for (const raw of text.split("\n")) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#") || line.startsWith("!")) continue;
+    let p2 = line.replace(/\\/g, "/");
+    if (p2.endsWith("/")) p2 = p2.slice(0, -1);
+    if (!p2) continue;
+    if (p2.startsWith("/")) {
+      const rel = p2.slice(1);
+      patterns.push(rel, `${rel}/**`);
+    } else if (p2.includes("/")) {
+      patterns.push(p2, `${p2}/**`);
+    } else {
+      patterns.push(`**/${p2}`, `**/${p2}/**`);
+    }
+  }
+  return patterns;
+}
+function resolveGlobPatterns(args) {
+  const presetRaw = typeof args.preset === "string" ? args.preset.trim().toLowerCase() : "";
+  const pattern = typeof args.pattern === "string" ? args.pattern.trim() : "";
+  if (presetRaw) {
+    const key = presetRaw === "entry points" || presetRaw === "entrypoints" || presetRaw === "entry-points" ? "entry_points" : presetRaw === "configs" ? "config" : presetRaw === "test" ? "tests" : presetRaw;
+    const preset = GLOB_PRESETS[key];
+    if (!preset) {
+      return `error: unknown preset "${args.preset}". Use "config", "entry points", or "tests".`;
+    }
+    return { patterns: preset, label: `preset:${key === "entry_points" ? "entry points" : key}` };
+  }
+  if (!pattern) {
+    return 'error: provide "pattern" or "preset" ("config" | "entry points" | "tests")';
+  }
+  return { patterns: [pattern], label: `pattern:${pattern}` };
 }
 async function globTool(ctx, args) {
-  const pattern = String(args.pattern ?? "").trim();
-  if (!pattern) return 'error: "pattern" is required';
+  const resolved = resolveGlobPatterns(args);
+  if (typeof resolved === "string") return resolved;
   const maxResults = clampInt(args.max_results, MAX_GLOB_RESULTS, 1, 200);
-  const files = await (0, import_fast_glob.default)(pattern, {
+  const hardIgnore = [...IGNORE_DIRS].map((d2) => `**/${d2}/**`);
+  const gitignorePatterns = loadGitignoreIgnorePatterns(ctx.workspaceRoot);
+  const runFg = (extraIgnore) => (0, import_fast_glob.default)(resolved.patterns, {
     cwd: ctx.workspaceRoot,
     dot: false,
-    gitignore: true,
     onlyFiles: true,
     absolute: false,
     suppressErrors: true,
-    ignore: [...IGNORE_DIRS].map((d2) => `**/${d2}/**`)
+    unique: true,
+    ignore: [...hardIgnore, ...extraIgnore]
   });
+  const [withGitignore, withoutGitignore] = await Promise.all([
+    runFg(gitignorePatterns),
+    runFg([])
+  ]);
+  const excludedByGitignore = Math.max(0, withoutGitignore.length - withGitignore.length);
+  const files = withGitignore;
   const truncated = files.length > maxResults;
   const slice = files.slice(0, maxResults);
-  if (slice.length === 0) return "No files matched.";
+  if (slice.length === 0) {
+    const bits = [`No files matched (${resolved.label}).`];
+    if (excludedByGitignore > 0) {
+      bits.push(
+        `${excludedByGitignore} file(s) matched the pattern but were excluded by .gitignore \u2014 try a more specific path or check ignored folders.`
+      );
+    }
+    bits.push("Zero hits \u2260 absent: retry with another preset/pattern before concluding nothing exists.");
+    return bits.join("\n");
+  }
   const lines = [
-    `${slice.length} file(s)${truncated ? ` (truncated; ${files.length} total \u2014 narrow the pattern)` : ""}:`,
+    `${slice.length} file(s) (${resolved.label})${truncated ? ` \u2014 truncated; ${files.length} total matched, showing first ${maxResults}. Narrow the pattern.` : ""}${excludedByGitignore > 0 ? ` \u2014 ${excludedByGitignore} file(s) excluded by .gitignore.` : ""}:`,
     ...slice.map((f2) => `- ${f2}`)
   ];
   return lines.join("\n");
 }
-async function grepTool(ctx, args) {
-  const pattern = String(args.pattern ?? "");
-  if (!pattern) return 'error: "pattern" is required';
-  const searchPathRaw = String(args.path ?? args.glob ?? ".").trim() || ".";
-  const searchAbs = safeResolve(ctx.workspaceRoot, searchPathRaw);
-  if (!searchAbs) return "error: path is outside the workspace";
-  const caseInsensitive = args.case_insensitive === true || args.case_insensitive === "true" || args.caseInsensitive === true;
+function collectGrepPatterns(args) {
+  const patterns = [];
+  if (Array.isArray(args.patterns)) {
+    for (const p2 of args.patterns) {
+      if (typeof p2 === "string" && p2.trim()) patterns.push(p2.trim());
+    }
+  }
+  const single = typeof args.pattern === "string" ? args.pattern.trim() : "";
+  if (single) patterns.push(single);
+  const seen = /* @__PURE__ */ new Set();
+  const unique = patterns.filter((p2) => {
+    if (seen.has(p2)) return false;
+    seen.add(p2);
+    return true;
+  });
+  if (unique.length === 0) return 'error: "pattern" or "patterns" is required';
+  if (unique.length > 8) return "error: at most 8 patterns per grep call";
+  return unique;
+}
+function wantsCaseInsensitive(args) {
+  if (args.case_sensitive === true || args.case_sensitive === "true" || args.caseSensitive === true) {
+    return false;
+  }
+  if (args.case_insensitive === false || args.case_insensitive === "false" || args.caseInsensitive === false) {
+    return false;
+  }
+  return true;
+}
+async function runSingleGrep(ctx, pattern, searchAbs, caseInsensitive, maxMatches) {
   const rg = await resolveRgPath();
-  if (!rg) return "error: ripgrep is unavailable";
+  if (!rg) return { matches: [], error: "error: ripgrep is unavailable", hitCap: false };
   const rgArgs = [
     "--json",
+    "-C",
+    String(GREP_CONTEXT_LINES),
     "--max-count",
-    String(MAX_GREP_MATCHES),
+    String(maxMatches),
     "--glob",
     "!**/node_modules/**",
     "--glob",
@@ -19417,26 +19616,75 @@ async function grepTool(ctx, args) {
       maxBuffer: 2 * 1024 * 1024,
       cwd: ctx.workspaceRoot
     });
-    const matches = parseRipgrepJson(stdout, ctx.workspaceRoot);
-    if (matches.length === 0) return "No matches.";
-    const truncated = matches.length >= MAX_GREP_MATCHES;
-    const body = matches.map((m2) => `${m2.file}:${m2.line}: ${m2.text}`).join("\n");
-    return truncated ? `${body}
-\u2026(truncated at ${MAX_GREP_MATCHES} matches \u2014 narrow the pattern)` : body;
+    const matches = parseRipgrepJson(stdout, ctx.workspaceRoot, maxMatches);
+    return { matches, hitCap: matches.length >= maxMatches };
   } catch (err) {
     const e2 = err;
-    if (e2.code === 1) return "No matches.";
+    if (e2.code === 1) return { matches: [], hitCap: false };
     if (e2.stdout) {
-      const matches = parseRipgrepJson(e2.stdout, ctx.workspaceRoot);
-      if (matches.length > 0) {
-        return matches.map((m2) => `${m2.file}:${m2.line}: ${m2.text}`).join("\n");
-      }
+      const matches = parseRipgrepJson(e2.stdout, ctx.workspaceRoot, maxMatches);
+      return { matches, hitCap: matches.length >= maxMatches };
     }
-    if (e2.code === "ENOENT") {
-      return "error: ripgrep binary not found";
-    }
-    return `error: grep failed: ${e2.message ?? String(err)}`;
+    if (e2.code === "ENOENT") return { matches: [], error: "error: ripgrep binary not found", hitCap: false };
+    return { matches: [], error: `error: grep failed: ${e2.message ?? String(err)}`, hitCap: false };
   }
+}
+async function grepTool(ctx, args) {
+  const patterns = collectGrepPatterns(args);
+  if (typeof patterns === "string") return patterns;
+  const searchPathRaw = String(args.path ?? args.glob ?? ".").trim() || ".";
+  const searchAbs = safeResolve(ctx.workspaceRoot, searchPathRaw);
+  if (!searchAbs) return "error: path is outside the workspace";
+  const caseInsensitive = wantsCaseInsensitive(args);
+  const sections = [];
+  let anyHits = false;
+  let anyCap = false;
+  for (const pattern of patterns) {
+    const { matches, error, hitCap } = await runSingleGrep(
+      ctx,
+      pattern,
+      searchAbs,
+      caseInsensitive,
+      MAX_GREP_MATCHES
+    );
+    if (error) return error;
+    if (matches.length === 0) {
+      sections.push(
+        [
+          `### pattern: ${JSON.stringify(pattern)} \u2014 No matches.`,
+          "Zero hits \u2260 absent: retry with a synonym, abbreviation, or alternate spelling before concluding this is missing."
+        ].join("\n")
+      );
+      continue;
+    }
+    anyHits = true;
+    if (hitCap) anyCap = true;
+    const body = matches.map(formatGrepMatch).join("\n---\n");
+    const header = [
+      `### pattern: ${JSON.stringify(pattern)} \u2014 ${matches.length} match(es)` + (caseInsensitive ? " (case-insensitive)" : " (case-sensitive)") + (hitCap ? `
+\u26A0\uFE0F Hit the ${MAX_GREP_MATCHES}-match cap \u2014 results are incomplete. Narrow by path (subdirectory) or file type (e.g. path:"src" or a tighter regex), then grep again.` : "")
+    ];
+    sections.push([...header, body].join("\n"));
+  }
+  if (!anyHits) {
+    return [
+      `No matches for ${patterns.length} pattern(s) under ${normalizeRel(searchPathRaw)}` + (caseInsensitive ? " (case-insensitive)." : "."),
+      `Tried: ${patterns.map((p2) => JSON.stringify(p2)).join(", ")}`,
+      "Zero hits \u2260 absent: you MUST try at least one more differently-phrased grep (or glob) before claiming this is not in the codebase."
+    ].join("\n");
+  }
+  const footer = [];
+  if (anyCap) {
+    footer.push(
+      `Note: at least one pattern hit the ${MAX_GREP_MATCHES}-match cap. Do not assume you saw everything \u2014 narrow scope and search again if completeness matters.`
+    );
+  }
+  if (patterns.length > 1) {
+    footer.push(`Searched ${patterns.length} patterns in one call; results grouped above.`);
+  }
+  return footer.length ? `${sections.join("\n\n")}
+
+${footer.join("\n")}` : sections.join("\n\n");
 }
 function readFileTool(ctx, args) {
   const rel = String(args.path ?? "");
@@ -19457,7 +19705,7 @@ function readFileTool(ctx, args) {
       return `${rel}:1-${MAX_READ_LINES}
 ${numbered3}
 
-[truncated \u2014 file has ${lines.length} lines; use line_start/line_end]`;
+[truncated at line ${MAX_READ_LINES} of ${lines.length} \u2014 re-read with line_start/line_end for the rest; do not assume completeness]`;
     }
     const numbered2 = lines.map((l2, i2) => `${i2 + 1}	${l2}`).join("\n");
     return `${rel}:1-${lines.length}
@@ -19477,25 +19725,97 @@ ${numbered2}`;
   );
   if (end - start + 1 > MAX_READ_LINES) end = start + MAX_READ_LINES - 1;
   const numbered = lines.slice(start - 1, end).map((l2, i2) => `${start + i2}	${l2}`).join("\n");
+  const truncatedRange = end < lines.length && end - start + 1 >= MAX_READ_LINES;
+  const suffix = truncatedRange ? `
+
+[truncated at line ${end} of ${lines.length} \u2014 request another range for the rest]` : end < lines.length ? `
+
+[${end - start + 1} lines shown; file continues to line ${lines.length}]` : "";
   return `${rel}:${start}-${end}
-${numbered}`;
+${numbered}${suffix}`;
+}
+function countDirFiles(abs) {
+  let files = 0;
+  let dirs = 0;
+  let entries;
+  try {
+    entries = fs2.readdirSync(abs, { withFileTypes: true });
+  } catch {
+    return { files: 0, dirs: 0 };
+  }
+  for (const e2 of entries) {
+    if (IGNORE_DIRS.has(e2.name) || e2.name.startsWith(".")) continue;
+    if (e2.isDirectory()) dirs += 1;
+    else files += 1;
+  }
+  return { files, dirs };
 }
 function listDirTool(ctx, args) {
   const rel = String(args.path ?? ".");
   const abs = safeResolve(ctx.workspaceRoot, rel);
   if (!abs) return "error: path is outside the workspace";
+  const depth = clampInt(args.depth, 2, 1, 2);
   let entries;
   try {
     entries = fs2.readdirSync(abs, { withFileTypes: true });
   } catch {
     return `error: cannot list ${rel}`;
   }
-  const rows = entries.filter((e2) => !IGNORE_DIRS.has(e2.name)).map((e2) => ({ name: e2.name, type: e2.isDirectory() ? "dir" : "file" })).sort((a2, b2) => {
+  const rows = entries.filter((e2) => !IGNORE_DIRS.has(e2.name) && !e2.name.startsWith(".")).map((e2) => ({ name: e2.name, type: e2.isDirectory() ? "dir" : "file" })).sort((a2, b2) => {
     if (a2.type !== b2.type) return a2.type === "dir" ? -1 : 1;
     return a2.name.localeCompare(b2.name);
   });
   if (rows.length === 0) return "(empty)";
-  return rows.map((r2) => `${r2.type === "dir" ? "dir " : "file"} ${r2.name}${r2.type === "dir" ? "/" : ""}`).join("\n");
+  const lines = [`${normalizeRel(rel)}/ (depth ${depth}):`];
+  let childBudget = MAX_LIST_DIR_CHILDREN;
+  for (const r2 of rows) {
+    if (r2.type === "file") {
+      lines.push(`file  ${r2.name}`);
+      continue;
+    }
+    const childAbs = path2.join(abs, r2.name);
+    const counts = countDirFiles(childAbs);
+    const relevant = isRelevantDirName(r2.name);
+    const flag = relevant ? " \u2605relevant" : "";
+    lines.push(
+      `dir   ${r2.name}/${flag}  (${counts.files} files, ${counts.dirs} subdirs)`
+    );
+    if (depth < 2) continue;
+    let children;
+    try {
+      children = fs2.readdirSync(childAbs, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    const childRows = children.filter((e2) => !IGNORE_DIRS.has(e2.name) && !e2.name.startsWith(".")).map((e2) => ({ name: e2.name, type: e2.isDirectory() ? "dir" : "file" })).sort((a2, b2) => {
+      if (a2.type !== b2.type) return a2.type === "dir" ? -1 : 1;
+      return a2.name.localeCompare(b2.name);
+    });
+    const show = childRows.slice(0, Math.min(childRows.length, Math.max(0, childBudget)));
+    childBudget -= show.length;
+    for (const c2 of show) {
+      if (c2.type === "dir") {
+        const nested = countDirFiles(path2.join(childAbs, c2.name));
+        const nestedRelevant = isRelevantDirName(c2.name);
+        lines.push(
+          `        dir   ${c2.name}/${nestedRelevant ? " \u2605relevant" : ""}  (${nested.files} files)`
+        );
+      } else {
+        lines.push(`        file  ${c2.name}`);
+      }
+    }
+    if (childRows.length > show.length) {
+      lines.push(`        \u2026 +${childRows.length - show.length} more in ${r2.name}/`);
+    }
+    if (childBudget <= 0 && rows.indexOf(r2) < rows.length - 1) {
+      lines.push("\u2026 (child listing budget reached \u2014 list_dir a specific subfolder for more)");
+      break;
+    }
+  }
+  if (rows.some((r2) => r2.type === "dir" && isRelevantDirName(r2.name))) {
+    lines.push("Tip: \u2605relevant folders are strong next targets for glob/grep.");
+  }
+  return lines.join("\n");
 }
 async function validateMermaidTool(args) {
   const raw = String(args.code ?? "");
@@ -19704,8 +20024,14 @@ async function runTool(name, args, ctx) {
 
 // extension/ai/agentLoop.ts
 var MAX_ITERS = 15;
+var BUDGET_WARN_AFTER = 10;
 var MAX_HISTORY_MESSAGES = 12;
 var MAX_HISTORY_CHARS = 2e3;
+var SEARCH_FLOW_RULES = `CODEBASE SEARCH RULES:
+- Default order: list_dir (orient) \u2192 glob (candidate files by name/path/preset) \u2192 grep (candidate lines; use patterns:[...] for synonyms) \u2192 read_file (confirm). Do not jump to read_file on a guessed path, and do not grep before you have any sense of folder structure (unless prior turns already oriented you).
+- Zero hits \u2260 absent. If grep/glob returns nothing, retry with a different phrasing (synonym, abbreviation, alternate casing, SDK import) before concluding something is missing. Require at least 2 different query attempts before stating a feature/file/symbol is not in the codebase.
+- No claim without a citation. Every factual claim in a draft or inventory answer must trace to a specific read_file observation (cite path:line). Grep snippets are leads, not proof.
+- Watch the tool budget. When observations note iterations remaining, prioritize closing out with what you have over open-ended exploration.`;
 function systemPrompt(phase, label) {
   if (phase === "home") {
     return `You are the Charter Ai home orchestrator. The Home Documents grid starts empty and only shows docs you create (or the user adds).
@@ -19718,15 +20044,17 @@ CRITICAL \u2014 never claim you created a pipeline document unless you called ge
 CRITICAL \u2014 never claim you populated/wrote a document unless you returned it in "document" with "targetDoc" set to that doc's id or exact name. Home chat does not magically fill tiles.
 CRITICAL \u2014 when prior conversation turns are included above the latest USER message, treat them as short-term memory: continue coherently, do not pretend the earlier exchange did not happen, and build on prior findings instead of starting from scratch.
 
+${SEARCH_FLOW_RULES}
+
 WORKFLOW:
-1. Investigate with tools: list_dir \u2192 glob / grep \u2192 read_file (or reason from chat if there is little/no code).
-2. For category questions (what AI features exist, where is X used, inventory of a capability): after concept greps, do a second pass on SDK/import anchors (openai, mistral, anthropic, chromadb, embeddings, chat.completions, etc.). Do not treat 2\u20133 solid hits as complete.
+1. Investigate with tools in order: list_dir \u2192 glob \u2192 grep \u2192 read_file (or reason from chat if there is little/no code).
+2. For category questions (what AI features exist, where is X used, inventory of a capability): after concept greps, do a second pass on SDK/import anchors (openai, mistral, anthropic, chromadb, embeddings, chat.completions, etc.) \u2014 prefer one grep with patterns:[...]. Do not treat 2\u20133 solid hits as complete.
 3. If the user asks what docs exist \u2192 list_pipeline, then answer from the observation.
 4. If creating / adding doc slots \u2192 generate_pipeline with mode "append" (or "replace" only when they want a full rebuild).
 5. If removing/changing slots \u2192 list_pipeline if needed, then remove_pipeline_docs and/or generate_pipeline with mode "replace".
 6. If the user asks you to create AND draft a document:
    a) generate_pipeline (append) for the new name(s) if they are not already on the pipeline.
-   b) Research as needed; validate_mermaid for diagrams.
+   b) Research as needed; validate_mermaid for diagrams. Cite read_file path:line for factual claims.
    c) Finish with document=[BlockNote blocks] AND targetDoc="<id or exact name from the tool observation>".
 7. If drafting an existing doc only: list_pipeline \u2192 research \u2192 finish with document + targetDoc.
 8. Otherwise finish with document:null and no targetDoc.
@@ -19749,15 +20077,17 @@ HARD CONSTRAINTS:
 You HAVE LIVE ACCESS to the user's open workspace via tools. You can list directories, grep, and read real files.
 You can also manage the Home pipeline (create/list/remove document slots) with the pipeline tools.
 
-CRITICAL \u2014 never claim you cannot read the codebase. Never tell the user to paste code or run external commands instead of using your tools. If the user asks you to read/analyze the code, your FIRST response must be a tool call (usually list_dir, glob, or grep).
+CRITICAL \u2014 never claim you cannot read the codebase. Never tell the user to paste code or run external commands instead of using your tools. If the user asks you to read/analyze the code, your FIRST response must be a tool call (usually list_dir, then glob or grep).
 CRITICAL \u2014 to add a NEW document to the Home pipeline, you MUST call generate_pipeline (do not invent tiles).
 CRITICAL \u2014 if drafting a doc other than the one currently open, finish with targetDoc set to that doc's id or exact name (after generate_pipeline / list_pipeline).
 CRITICAL \u2014 when prior conversation turns are included above the latest USER message, treat them as short-term memory: continue coherently and build on earlier findings.
 
+${SEARCH_FLOW_RULES}
+
 WORKFLOW:
-1. Investigate with tools when a codebase is available: list_dir \u2192 glob / grep \u2192 read_file.
-2. Ground claims in real code and cite file:line. If there is little/no code, reason from the chat and requirements instead.
-3. For category / inventory questions (AI features, integrations, "where is X used"): after concept greps, run a second pass on SDK/import anchors (openai, mistral, anthropic, chromadb, embeddings, chat.completions, etc.). Do not stop after 2\u20133 good concept matches \u2014 those are examples, not coverage.
+1. Investigate with tools when a codebase is available: list_dir \u2192 glob \u2192 grep \u2192 read_file.
+2. Ground every factual claim in a read_file observation and cite path:line. Grep is for finding candidates only. If there is little/no code, reason from the chat and requirements instead.
+3. For category / inventory questions (AI features, integrations, "where is X used"): after concept greps, run a second pass on SDK/import anchors (openai, mistral, anthropic, chromadb, embeddings, chat.completions, etc.) via patterns:[...]. Do not stop after 2\u20133 good concept matches \u2014 those are examples, not coverage.
 4. If the user wants a new pipeline document: generate_pipeline (append) first, then draft with targetDoc pointing at the new id/name.
 5. When the document needs a diagram: draft Mermaid yourself from that understanding, then call validate_mermaid. Fix and re-validate if it fails. Do not skip validation for diagrams you include.
 6. When you have enough evidence, output the final document JSON (include validated diagram blocks). For the open canvas you may omit targetDoc; for any other/new doc you must set targetDoc.
@@ -20008,7 +20338,18 @@ async function runAgentLoop(args) {
       return { ...step2.final, messages };
     }
     if (step2?.tool) {
-      const observation = await runTool(step2.tool, step2.args ?? {}, ctx);
+      let observation = await runTool(step2.tool, step2.args ?? {}, ctx);
+      const toolsUsed = iter + 1;
+      const remaining = MAX_ITERS - toolsUsed;
+      if (toolsUsed >= BUDGET_WARN_AFTER && remaining > 0) {
+        observation = `${observation}
+
+[BUDGET: ${remaining} tool iteration(s) remaining of ${MAX_ITERS} \u2014 prioritize closing out on evidence you already have; avoid open-ended exploration.]`;
+      } else if (remaining === 0) {
+        observation = `${observation}
+
+[BUDGET: last tool iteration used \u2014 next response MUST be final JSON (no more tool calls).]`;
+      }
       messages.push({ role: "assistant", content: raw2 });
       messages.push({
         role: "user",
