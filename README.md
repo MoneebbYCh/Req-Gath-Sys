@@ -9,78 +9,81 @@ document is a BlockNote canvas with AI chat, templates, and Mermaid diagrams.
 Two layers, one runtime (Node — the VS Code extension host). There is no separate backend
 process to install or bundle.
 
-1. **Webview (React + Vite)** — `src/`: Home, canvas editor, chat panel.
+1. **Webview (React + Vite)** — `src/`: Home, canvas editor, chat panel, profile.
 2. **TS extension host** — `extension/`: disk persistence under `.charter-ai/`, ReAct agent
-   loop, LLM calls, semantic embeddings, pipeline tools.
+   loop, LLM calls, pipeline + codebase tools.
 
 The webview talks to the host over `postMessage`. All AI work uses an OpenAI-compatible
 provider (DeepSeek by default; Kimi or a local Ollama-style endpoint optional) via the
-`openai` npm SDK.
+`openai` npm SDK. There is no code indexer and no embeddings — the agent reads the open
+workspace live with `list_dir` / `glob` / `grep` / `read_file`.
 
 Legacy fixed-pipeline content (old 6-phase defs, field guides, curated charter templates)
-is archived under [`reference/legacy-pipeline/`](reference/legacy-pipeline/) for lookup only.
+is archived under [`reference/legacy-pipeline/`](reference/legacy-pipeline/) for lookup only
+— it is not imported by the app.
 
-## Proposed architecture — agent and hardening priorities
+## Agent architecture
 
-Charter AI runs on **one ReAct-style agent**, not a multi-agent swarm — the same LLM loop
-is reused with two different personas (Home orchestrator vs. canvas drafter) depending on
-context. Everything below is organized around the six nodes this agent talks to.
+Charter Ai runs on **one ReAct-style agent**, not a multi-agent swarm — the same JSON-mode
+loop is reused with two personas:
 
-![Charter AI agent architecture](charter_ai_diagram.svg)
+- **Home orchestrator** (Home / Profile chat) — investigates the codebase, manages the
+  document pipeline (`list_pipeline` / `generate_pipeline` / `remove_pipeline_docs`), and
+  can draft any pipeline document by finishing with `targetDoc` + `document`.
+- **Canvas drafter** (document pages) — drafts and edits the open document's BlockNote
+  blocks, grounded in codebase reads; may also create new pipeline documents.
 
-- **Dashed arrows** — one-way. Static context going in (rules, field guides) or a final
-  artifact going out (drafted document). Not a live back-and-forth.
-- **Solid arrows** — two-way. A real tool call: the orchestrator asks, the module responds,
-  and the result feeds back into the loop.
+The loop is bounded: at most 15 tool iterations per request, then the agent must finish.
+Every model response is a single JSON object — either a tool call `{tool, args}` or a final
+`{message, document, anchors, targetDoc}` — parsed tolerantly (fences, trailing junk, and
+truncated finals are repaired).
 
-### The nodes
+### Agent tools
 
-| Node | Role | Link type |
-|------|------|-----------|
-| **Knowledge + rules** | Field guides and block catalog — per-doc-type drafting guidance and BlockNote block shapes | One-way in |
-| **Retriever** | `semantic_search`, `grep`, `read_file` over the workspace, seeded by embeddings sync | Two-way |
-| **Orchestrator** | The ReAct loop itself — up to 8 tool turns, JSON-mode parsing, never both `tool` and `document` in one turn | Hub |
-| **Pipeline** | `list_pipeline` / `generate_pipeline` / `remove_pipeline_docs` — manages Home doc slots | Two-way |
-| **Web access** | Not yet built — a proposed search/fetch tool for external context | Two-way (planned) |
-| **Editor** | Where the final `document` block array lands — normalized, Mermaid-validated, saved to `.charter-ai/` | One-way out |
+| Tool | Purpose |
+|------|---------|
+| `list_dir` | Orient on the workspace folder tree (flags relevant folders) |
+| `glob` | Find files by name/path, or preset (`config`, `entry points`, `tests`) |
+| `grep` | Regex search in file contents (±1 line context, ranked, capped) |
+| `read_file` | Read a known file (line ranges, explicit truncation) |
+| `validate_mermaid` | Parse-check Mermaid and return a ready diagram block |
+| `list_pipeline` | List the current document set on Home |
+| `generate_pipeline` | Create document slots (`append` default, or `replace`) |
+| `remove_pipeline_docs` | Remove document slots (by id/name, or `all: true`) |
 
-### Priority order for hardening
+Search discipline is enforced in the system prompt: default order
+`list_dir → glob → grep → read_file`, "zero hits ≠ absent" (retry with different phrasing
+before concluding), and every factual claim in a draft must trace to a `read_file`
+citation (path:line).
 
-The order follows a dependency chain: earlier items cap the quality of everything after them.
+### Documents and blocks
 
-1. **Retriever grounding quality**  
-   Everything downstream is bounded by this. If `semantic_search` and `grep` aren't reliably
-   surfacing the right files, no amount of prompt tuning fixes doc quality — the model just
-   writes confident-sounding fiction. Get embedding sync solid and retrieval precision high
-   before touching anything else.
+Each pipeline document is a BlockNote canvas persisted as JSON under
+`.charter-ai/<id>.json` (legacy `.req-gath-sys/` is still read as a fallback). Drafts land
+as validated block arrays: custom blocks `callout`, `kpiGrid`, `scopeBounds`,
+`stakeholderTable`, `riskList`, `diagram` (Mermaid), plus standard headings,
+paragraphs, and lists. Mermaid diagrams are parse-validated before commit — up to 2 LLM
+fix retries, then the invalid diagram is replaced with a warning callout.
 
-2. **Knowledgebase and field guides**  
-   Sharpen the per-doc-type templates (System Design, Charter info, Tech Docs) so they force
-   completeness the way arc42 or C4 would. A better template is one of the cheapest levers
-   for depth — it stops the model from skating past sections it would otherwise summarize
-   vaguely. (Starter material lives in `reference/legacy-pipeline/`.)
+### Hardening priorities
 
-3. **Orchestrator loop behavior**  
-   This is where clarify-before-drafting logic and multi-doc decomposition (shared
-   investigation, sequential drafting loops) live. Context trimming matters most here — as
-   usage scales from 1 doc to many, stale observations piling up in the message history is
-   what breaks the loop, not the model's reasoning.
-
-4. **Editor self-verification pass**  
-   Mermaid correctness is already hard-gated. Extend that same instinct to prose: after a
-   section drafts, have the loop re-check its claims against the files it cited. This is the
-   highest-leverage way to kill hallucinated details before they hit `.charter-ai/`.
-
-5. **Pipeline sequencing and UX**  
-   Mechanically already solid (create/check/delete). What's left is UX around multi-doc
-   runs — streaming `loadCanvas` / `loadDocTypes` progress per document as they finish, so a
-   multi-doc request doesn't look like a stalled spinner.
-
-6. **Web access**  
-   Build this last. It isn't implemented yet, and an unscoped fetch tool is the easiest way
-   to blow the context budget or pull in low-quality pages mid-draft. Needs the same
-   truncation discipline as the other tools plus a domain allowlist before it's safe to wire
-   into the loop.
+1. **Search/retrieval quality** — everything downstream is bounded by how reliably
+   `list_dir → glob → grep → read_file` surfaces the right files. If retrieval is weak, the
+   model writes confident-sounding fiction.
+2. **Knowledgebase and block prompts** — sharpen `extension/ai/blockCatalog.ts` so drafts
+   force completeness (measurable KPIs, specific out-of-scope, high-level risks) the way
+   arc42 or C4 would. A better catalog is one of the cheapest levers for depth.
+3. **Orchestrator loop behavior** — clarify-before-drafting, multi-doc decomposition
+   (shared investigation, sequential drafting), and context trimming as usage scales from
+   1 doc to many.
+4. **Editor self-verification pass** — Mermaid correctness is already gated; extend that
+   instinct to prose: after a section drafts, re-check claims against the files cited.
+5. **Pipeline sequencing and UX** — mechanically solid (create/check/delete); remaining
+   work is UX around multi-doc runs (streaming `loadCanvas` / `loadDocTypes` progress per
+   document instead of a stalled spinner).
+6. **Web access** — build last. An unscoped fetch tool is the easiest way to blow the
+   context budget or pull in low-quality pages mid-draft. Needs the same truncation
+   discipline as the other tools plus a domain allowlist before it is wired into the loop.
 
 ## Getting started
 
@@ -100,14 +103,16 @@ Provide an OpenAI-compatible API key either way:
 - **Environment variable:** `export DEEPSEEK_API_KEY="sk-..."` (or `MOONSHOT_API_KEY` for Kimi)
   before launching VS Code.
 
+Key resolution order: SecretStorage → provider env var → generic `REQ_GATH_SYS_API_KEY` /
+`LLM_API_KEY`. The `local` provider (Ollama at `http://localhost:11434/v1`) needs no key.
+
 Select the active provider/model in `.charter-ai/config.json`:
 
 ```json
 { "llm": { "provider": "deepseek", "model": null } }
 ```
 
-Optional embeddings (for `semantic_search`) via **"Charter Ai: Configure Embeddings"** or
-`"embeddings"` in the same config (Ollama + `nomic-embed-text` by default).
+`model: null` uses the provider's default (DeepSeek: `deepseek-v4-flash`).
 
 ## Scripts
 
@@ -117,6 +122,7 @@ Optional embeddings (for `semantic_search`) via **"Charter Ai: Configure Embeddi
 | `npm run build:extension` | esbuild → `out/extension.cjs` |
 | `npm run build:webview` | vite → `dist/` |
 | `npm run dev` | Vite dev server (webview only) |
+| `npm run preview` | Vite preview (webview only) |
 | `npm run lint` | ESLint over the project |
 
 ## Contributing

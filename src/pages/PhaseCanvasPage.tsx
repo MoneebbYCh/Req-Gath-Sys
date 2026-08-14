@@ -17,6 +17,9 @@ import {
 } from '../data/docTemplates'
 import { getDocumentType } from '../data/documentTypes'
 import { storageKeyFor, TEMPLATE_TUTORIAL_BASE_KEY } from '../utils/workspaceScope'
+import { getVscodeApi } from '../utils/vscodeApi'
+import { canvasToMarkdown } from '../utils/exportMarkdown'
+import { ConfirmDialog } from '../components/ConfirmDialog'
 
 interface PhaseCanvasPageProps {
   phaseId: string
@@ -25,6 +28,19 @@ interface PhaseCanvasPageProps {
 }
 
 export function PhaseCanvasPage({ phaseId, onNavigate, goHome }: PhaseCanvasPageProps) {
+  // In-app notice — webview window.alert is unreliable even with allowModals.
+  const [notice, setNotice] = useState<string | null>(null)
+  useEffect(() => {
+    if (!notice) return
+    const t = setTimeout(() => setNotice(null), 3500)
+    return () => clearTimeout(t)
+  }, [notice])
+
+  // N7: an AI draft replaced the document while the user was editing — surface it.
+  const handleDraftReplaced = useCallback((message: string) => {
+    setNotice(message)
+  }, [])
+
   const {
     meta,
     doc,
@@ -38,7 +54,7 @@ export function PhaseCanvasPage({ phaseId, onNavigate, goHome }: PhaseCanvasPage
     ready,
     externalRevision,
     externalBlocks,
-  } = usePhaseDocument(phaseId)
+  } = usePhaseDocument(phaseId, { onReplaced: handleDraftReplaced })
 
   const tutorialKey = storageKeyFor(TEMPLATE_TUTORIAL_BASE_KEY)
 
@@ -56,6 +72,9 @@ export function PhaseCanvasPage({ phaseId, onNavigate, goHome }: PhaseCanvasPage
   const [previewTemplateId, setPreviewTemplateId] = useState<string>(() => templateOptions[0].id)
   const [showTutorial, setShowTutorial] = useState(false)
   const autoOpenedRef = useRef(false)
+  // Set when the user clicks Apply on a template while the doc has content — the
+  // replacement is destructive, so it needs an explicit confirm.
+  const [pendingTemplate, setPendingTemplate] = useState<CharterTemplate | null>(null)
 
   // Every document type gets the Templates tab (blank + user-saved).
   const templatesEnabled = true
@@ -131,8 +150,21 @@ export function PhaseCanvasPage({ phaseId, onNavigate, goHome }: PhaseCanvasPage
         { persistToDisk: true },
       )
       setToolsTab('insert')
+      setPendingTemplate(null)
     },
     [applyExternalDocument, doc.anchors],
+  )
+
+  const requestApplyTemplate = useCallback(
+    (template: CharterTemplate) => {
+      // Replacing existing content is destructive — confirm first (V15).
+      if (hasContent) {
+        setPendingTemplate(template)
+      } else {
+        applyTemplate(template)
+      }
+    },
+    [hasContent, applyTemplate],
   )
 
   const handleSaveTemplate = useCallback(() => {
@@ -140,7 +172,7 @@ export function PhaseCanvasPage({ phaseId, onNavigate, goHome }: PhaseCanvasPage
       ? (editor.document as unknown as typeof blocks)
       : blocks
     if (!documentHasContent({ version: 1, kind: 'blocknote', blocks: source, anchors: {} })) {
-      window.alert('Add some content to this document before saving it as a template.')
+      setNotice('Add some content to this document before saving it as a template.')
       return
     }
     const name = window.prompt('Name this template', `${displayTitle} template`)
@@ -156,7 +188,25 @@ export function PhaseCanvasPage({ phaseId, onNavigate, goHome }: PhaseCanvasPage
 
   const handleExport = () => {
     saveNow()
-    window.alert('PDF export for canvas documents is coming soon. Your draft is saved.')
+    const source = editor?.document?.length
+      ? (editor.document as unknown as typeof blocks)
+      : blocks
+    const docForExport = {
+      version: 1 as const,
+      kind: 'blocknote' as const,
+      blocks: source,
+      anchors: {},
+    }
+    if (!documentHasContent(docForExport)) {
+      setNotice('Add some content to this document before exporting.')
+      return
+    }
+    getVscodeApi()?.postMessage({
+      type: 'exportMarkdown',
+      phase: phaseId,
+      markdown: canvasToMarkdown(docForExport),
+      suggestedName: displayTitle,
+    })
   }
 
   const saveLabel = isDirty
@@ -170,6 +220,14 @@ export function PhaseCanvasPage({ phaseId, onNavigate, goHome }: PhaseCanvasPage
 
   return (
     <div className="charter-canvas-page flex flex-col h-screen overflow-hidden">
+      {notice ? (
+        <div
+          className="fixed top-3 left-1/2 -translate-x-1/2 z-50 border-2 border-on-background bg-secondary-container px-4 py-2 text-sm font-bold text-on-background"
+          style={{ fontFamily: 'var(--font-body)' }}
+        >
+          {notice}
+        </div>
+      ) : null}
       <PipelineHeader
         onHome={goHome}
         onExport={handleExport}
@@ -205,7 +263,7 @@ export function PhaseCanvasPage({ phaseId, onNavigate, goHome }: PhaseCanvasPage
               template={previewTemplate}
               currentTemplateId={templateId}
               hasExistingContent={hasContent}
-              onApply={applyTemplate}
+              onApply={requestApplyTemplate}
               onCancel={() => setToolsTab('insert')}
             />
           </div>
@@ -256,6 +314,16 @@ export function PhaseCanvasPage({ phaseId, onNavigate, goHome }: PhaseCanvasPage
 
       {templatesEnabled && showTutorial ? (
         <TemplateTutorial documentLabel={displayTitle} onClose={dismissTutorial} />
+      ) : null}
+
+      {pendingTemplate ? (
+        <ConfirmDialog
+          title="Apply template"
+          message={`Replace the current document with "${pendingTemplate.name}"? Your current content will be overwritten.`}
+          confirmLabel="Apply"
+          onConfirm={() => applyTemplate(pendingTemplate)}
+          onCancel={() => setPendingTemplate(null)}
+        />
       ) : null}
     </div>
   )

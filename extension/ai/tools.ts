@@ -13,6 +13,28 @@ export interface ToolContext {
   workspaceRoot: string
   /** Called after generate_pipeline writes doc-types.json so the webview can refresh. */
   onDocTypesChanged?: (data: unknown[], mode: 'merge' | 'replace') => void
+  /** N5: ask the user before destructive pipeline mutations. Resolves true = approved. */
+  confirmDestructive?: (what: string) => Promise<boolean>
+  /** Set after the user declines once, so the agent cannot re-prompt/spam the modal. */
+  destructiveDeclined?: boolean
+}
+
+/**
+ * N5: which agent tool calls can wipe the user's pipeline and therefore need a
+ * human confirmation before executing. Targeted removals stay ungated.
+ */
+export function needsDestructiveConfirm(
+  tool: string,
+  args: Record<string, unknown>,
+): boolean {
+  if (tool === 'remove_pipeline_docs') {
+    return args.all === true || args.all === 'true'
+  }
+  if (tool === 'generate_pipeline') {
+    const mode = typeof args.mode === 'string' ? args.mode.trim().toLowerCase() : 'append'
+    return mode === 'replace'
+  }
+  return false
 }
 
 const IGNORE_DIRS = new Set([
@@ -851,6 +873,20 @@ async function removePipelineDocsTool(
   ctx: ToolContext,
   args: Record<string, unknown>,
 ): Promise<string> {
+  // N5: wiping the whole pipeline needs the user's OK first.
+  if (needsDestructiveConfirm('remove_pipeline_docs', args)) {
+    if (ctx.destructiveDeclined) {
+      return 'The user declined the destructive pipeline removal earlier in this run — do NOT retry it. Report that the removal was cancelled.'
+    }
+    if (ctx.confirmDestructive) {
+      const ok = await ctx.confirmDestructive('remove all pipeline documents')
+      if (!ok) {
+        ctx.destructiveDeclined = true
+        return 'The user declined to remove all pipeline documents. Do NOT call remove_pipeline_docs again in this run — tell the user the removal was cancelled.'
+      }
+    }
+  }
+
   const existing = await loadStoredCustomDocs(ctx.workspaceRoot)
   if (existing.length === 0) {
     return 'Pipeline is already empty — nothing to remove.'
@@ -916,6 +952,20 @@ async function generatePipelineTool(
 
   const modeRaw = typeof args.mode === 'string' ? args.mode.trim().toLowerCase() : 'append'
   const mode: 'append' | 'replace' = modeRaw === 'replace' ? 'replace' : 'append'
+
+  // N5: a full pipeline rebuild replaces the user's docs — needs their OK first.
+  if (needsDestructiveConfirm('generate_pipeline', args)) {
+    if (ctx.destructiveDeclined) {
+      return 'The user declined the destructive pipeline replacement earlier in this run — do NOT retry it. Report that the replacement was cancelled.'
+    }
+    if (ctx.confirmDestructive) {
+      const ok = await ctx.confirmDestructive('replace the entire pipeline')
+      if (!ok) {
+        ctx.destructiveDeclined = true
+        return 'The user declined to replace the entire pipeline. Do NOT call generate_pipeline again in this run — tell the user the replacement was cancelled.'
+      }
+    }
+  }
 
   const existing = await loadStoredCustomDocs(ctx.workspaceRoot)
 
