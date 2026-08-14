@@ -28,6 +28,8 @@ interface HomePageProps {
   isAsking?: boolean
   /** Bumped when extension pushes updated doc types (e.g. generate_pipeline). */
   docTypesRev?: number
+  /** No folder is open in VS Code — show a notice instead of the pipeline. */
+  noWorkspace?: boolean
 }
 
 function loadSavedDoc(phaseId: string): { doc: CanvasDocument | null; hasDraft: boolean } {
@@ -62,7 +64,13 @@ function clearAllDocs() {
   })
 }
 
-export function HomePage({ onNavigate, onAsk, isAsking, docTypesRev: docTypesRevProp = 0 }: HomePageProps) {
+export function HomePage({
+  onNavigate,
+  onAsk,
+  isAsking,
+  docTypesRev: docTypesRevProp = 0,
+  noWorkspace = false,
+}: HomePageProps) {
   const [profile] = useState(() => loadProfile())
 
   const [pendingReset, setPendingReset] = useState(false)
@@ -120,6 +128,21 @@ export function HomePage({ onNavigate, onAsk, isAsking, docTypesRev: docTypesRev
 
   return (
     <div className="home-desktop h-screen w-full overflow-hidden flex flex-col dither-bg">
+      {noWorkspace ? (
+        <div className="home-mac-window flex-1 min-h-0 m-2 md:m-3 border-2 border-on-background bg-white mac-window-shadow flex flex-col items-center justify-center gap-4 p-8 text-center">
+          <BrandMark size="lg" />
+          <h2
+            className="text-xl font-bold text-on-background"
+            style={{ fontFamily: 'var(--font-headline)' }}
+          >
+            Open a folder to use Charter Ai
+          </h2>
+          <p className="text-sm text-on-surface-variant max-w-md" style={{ fontFamily: 'var(--font-body)' }}>
+            Drafts and AI need a workspace. Open a project folder in VS Code, then run
+            “Charter Ai: Open Pipeline” again.
+          </p>
+        </div>
+      ) : (
       <div className="home-mac-window flex-1 min-h-0 m-2 md:m-3 border-2 border-on-background bg-white mac-window-shadow flex flex-col">
         <div className="flex items-center gap-2 border-b-2 border-on-background bg-secondary-container px-2 py-1 shrink-0">
           <div className="mac-striped-header flex-1 min-w-0" aria-hidden />
@@ -410,6 +433,7 @@ export function HomePage({ onNavigate, onAsk, isAsking, docTypesRev: docTypesRev
           </div>
         </div>
       </div>
+      )}
 
       {pendingReset ? (
         <ConfirmDialog

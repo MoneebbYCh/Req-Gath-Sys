@@ -1,46 +1,64 @@
-# Charter Ai — AI-Native Requirements Gathering
+# Charter Ai — Code-Aware Project Document Drafting
 
 ## The Problem
 
-Teams spend weeks writing project charters and PRDs. The format fights you — blank templates, scattered feedback, no connection to the actual codebase. Requirements become static documents that live in a drive somewhere, disconnected from the code they describe.
+Teams spend weeks writing project charters, PRDs, and architecture documents. The format
+fights you — blank templates, scattered feedback, no connection to the actual codebase.
+Requirements become static documents that live in a drive somewhere, disconnected from the
+code they describe.
 
 ## What It Is
 
-Charter Ai is a VS Code extension that turns requirements gathering from a document-writing exercise into a code-aware AI-assisted workflow.
+Charter Ai is a VS Code extension that turns document drafting from a writing exercise into
+a code-aware AI-assisted workflow. Home starts empty: you ask for what your project needs
+(or pick a document), and the agent investigates the real codebase — listing folders,
+searching symbols, reading files — before it drafts anything.
 
 ```
-[write requirements] ←→ [AI fills forms from context] ←→ [linked to codebase]
+[ask in chat] ←→ [agent reads your code] ←→ [BlockNote canvas draft]
 ```
 
 ## Current State (MVP)
 
 A working VS Code extension with:
 
-- **8-section project charter + PRD forms** with auto-save, gate reviews, signatures
-- **Codebase indexer** — builds a knowledge graph (madar) + TypeScript type/component map
-- **AI assistant** — embedded chat panel that loads form data and calls VS Code's built-in LM API (Copilot/Claude) to help fill fields
-- **PDF export** — one-click charter/PRD export
+- **Dynamic document pipeline** — no fixed phases. Create any document (System Design,
+  API Contract, Security Review, …) via **New Document**, the Ask bar, or by telling the
+  agent; the Home grid only shows what you/your team created
+- **Code-aware agent** — a ReAct loop with live workspace tools (`list_dir`, `glob`,
+  `grep`, `read_file`) that cites files (path:line) instead of guessing
+- **BlockNote canvas editing** — structured blocks (KPIs, scope bounds, stakeholder
+  tables, risk lists, callouts) plus free-form text, auto-saved to `.charter-ai/`
+- **Mermaid diagrams that actually render** — every diagram is parse-validated before it
+  lands, with automatic LLM fix retries and a clear warning callout if it fails
+- **Agent-managed pipeline** — ask the agent to "create a doc for X and draft it"; it
+  creates the slot and drafts straight into it from chat
 - **Retro Mac OS 9 UI** — distinctive, memorable, fast
 
-The chat agent connects to the LM, loads current form data into context, and responds conversationally. Form-filling via structured JSON output is the remaining piece.
+It runs on any OpenAI-compatible provider (DeepSeek by default, Kimi or a local Ollama
+endpoint optional) with your own key — no vendor lock-in, no Copilot dependency.
 
 ## Why VS Code
 
 - Ships to every developer with zero install friction
-- Built-in LM API (Copilot) — no API keys, no external services
 - Webview UI means React components, not DOM hacking
 - Extensions can read the actual codebase — requirements stay linked to code
+- Secrets stay in VS Code SecretStorage; the agent runs locally in the extension host
 
 ## The Vision
 
 ```
-Phase 1 (now)     → AI-assisted forms inside VS Code
-Phase 2 (next)    → Structured JSON form-filling + custom doc editor (BlockNote)
-Phase 3 (future)  → MCP tools, agent-driven templates, code→requirement traceability
+Phase 1 (now)     → agentic drafting: code-grounded canvas documents + pipeline management
+Phase 2 (next)    → multi-doc progress streaming, Markdown/PDF export, version history,
+                    provider settings UI, edit confirmation
+Phase 3 (future)  → MCP tools, web access with allowlists, code→requirement traceability
 ```
 
 Not another docs tool. Requirements that live where the code lives.
 
 ## Why Now
 
-Every team with a half-decent SDLC writes charters and PRDs. They paste them into Notion/Confluence/Google Docs and they rot. The gap isn't another editor — it's an editor that knows your code and fills the boilerplate so you focus on the decisions that matter.
+Every team with a half-decent SDLC writes charters, PRDs, and design docs. They paste them
+into Notion/Confluence/Google Docs and they rot. The gap isn't another editor — it's an
+editor that knows your code and fills the boilerplate so you focus on the decisions that
+matter.

@@ -24,7 +24,13 @@ function loadFromStorage(storageKey: string, legacyStorageKey?: string): CanvasD
 }
 
 /** Shared load/save hook for every BlockNote canvas document (built-in or custom). */
-export function usePhaseDocument(phaseId: string) {
+export function usePhaseDocument(
+  phaseId: string,
+  options?: { onReplaced?: (message: string) => void },
+) {
+  const { onReplaced } = options ?? {}
+  const onReplacedRef = useRef(onReplaced)
+  onReplacedRef.current = onReplaced
   const meta = getDocumentType(phaseId)
   if (!meta) {
     throw new Error(`Unknown document type: ${phaseId}`)
@@ -42,6 +48,21 @@ export function usePhaseDocument(phaseId: string) {
   const [externalBlocks, setExternalBlocks] = useState<BlockNoteBlock[] | null>(null)
   const docRef = useRef(doc)
   docRef.current = doc
+  // Mirror isDirty for the loadCanvas handler without re-running the effect
+  // (re-running would re-post loadCanvas on every keystroke → remount loop).
+  const dirtyRef = useRef(isDirty)
+  dirtyRef.current = isDirty
+  // False until the first loadCanvas response has been handled.
+  const loadedOnceRef = useRef(false)
+  // Tracks real unmounts so the debounce cleanup can flush pending edits only
+  // when navigating away — not on every debounce re-arm.
+  const mountedRef = useRef(true)
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+    }
+  }, [])
 
   // When navigating between phases, remount state from that phase's storage.
   useEffect(() => {
@@ -50,6 +71,7 @@ export function usePhaseDocument(phaseId: string) {
     setLastSaved(null)
     setExternalBlocks(null)
     setExternalRevision(0)
+    loadedOnceRef.current = false
     setReady(!vscode)
   }, [storageKey, legacyStorageKey])
 
@@ -70,7 +92,11 @@ export function usePhaseDocument(phaseId: string) {
     const timer = setTimeout(() => {
       persist(docRef.current)
     }, 500)
-    return () => clearTimeout(timer)
+    return () => {
+      clearTimeout(timer)
+      // Navigate-away within the debounce window would drop the edit — flush it.
+      if (!mountedRef.current) persist(docRef.current)
+    }
   }, [doc, isDirty, persist])
 
   const setBlocks = useCallback((blocks: BlockNoteBlock[]) => {
@@ -118,6 +144,22 @@ export function usePhaseDocument(phaseId: string) {
     const handler = (event: MessageEvent) => {
       const msg = event.data
       if (msg.type === 'loadCanvas' && msg.phase === phaseId) {
+        if (!loadedOnceRef.current) {
+          loadedOnceRef.current = true
+          // N2: the user typed before the disk read returned — keep their edits,
+          // never clobber them with the (already stale) disk version.
+          if (dirtyRef.current) {
+            setReady(true)
+            return
+          }
+        } else if (dirtyRef.current) {
+          // N7: an external replacement (e.g. an AI draft) landed while the user
+          // has unsaved edits — save those first, then apply, then tell the page.
+          persist(docRef.current)
+          onReplacedRef.current?.(
+            'The AI draft replaced this document — your unsaved edits were saved first.',
+          )
+        }
         // null/empty from disk must clear the workspace-scoped cache — never keep
         // another folder's draft that happened to share a bare localStorage key.
         if (msg.data) {
@@ -131,7 +173,7 @@ export function usePhaseDocument(phaseId: string) {
     window.addEventListener('message', handler)
     vscode.postMessage({ type: 'loadCanvas', phase: phaseId })
     return () => window.removeEventListener('message', handler)
-  }, [applyExternalDocument, phaseId])
+  }, [applyExternalDocument, phaseId, persist])
 
   return {
     meta,

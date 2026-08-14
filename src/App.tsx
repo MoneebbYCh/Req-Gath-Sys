@@ -22,17 +22,25 @@ function App() {
   // Wait until we know which folder we're in (VS Code) so localStorage is scoped first.
   const [scopeReady, setScopeReady] = useState(!vscode)
   const [workspaceKey, setWorkspaceKey] = useState(() => getWorkspaceId() || 'local')
+  const [noWorkspace, setNoWorkspace] = useState(false)
 
   useEffect(() => {
     if (!vscode) return
     const handler = (event: MessageEvent) => {
       const msg = event.data
       if (msg?.type === 'workspaceInfo' && typeof msg.path === 'string') {
-        setWorkspaceScope(msg.path)
-        setWorkspaceKey(getWorkspaceId() || 'workspace')
-        setScopeReady(true)
-        // Load doc types for *this* folder after scope is set.
-        vscode.postMessage({ type: 'loadDocTypes' })
+        if (msg.available !== false) {
+          setWorkspaceScope(msg.path)
+          setWorkspaceKey(getWorkspaceId() || 'workspace')
+          setScopeReady(true)
+          // Load doc types for *this* folder after scope is set.
+          vscode.postMessage({ type: 'loadDocTypes' })
+        } else {
+          // No folder open — show the notice state; nothing is persisted.
+          setNoWorkspace(true)
+          setWorkspaceKey('no-workspace')
+          setScopeReady(true)
+        }
       }
     }
     window.addEventListener('message', handler)
@@ -51,10 +59,10 @@ function App() {
   }
 
   // Remount the whole app tree when the folder changes so chat + docs reset.
-  return <AppShell key={workspaceKey} />
+  return <AppShell key={workspaceKey} noWorkspace={noWorkspace} />
 }
 
-function AppShell() {
+function AppShell({ noWorkspace }: { noWorkspace: boolean }) {
   const { view, navigate, goHome } = useViewState()
   // Home (and profile) use the orchestrator agent — can generate_pipeline.
   const chatPhase =
@@ -94,6 +102,7 @@ function AppShell() {
           onAsk={askFromHome}
           isAsking={chat.isTyping}
           docTypesRev={docTypesRev}
+          noWorkspace={noWorkspace}
         />
       )
     }
@@ -109,6 +118,7 @@ function AppShell() {
         onAsk={askFromHome}
         isAsking={chat.isTyping}
         docTypesRev={docTypesRev}
+        noWorkspace={noWorkspace}
       />
     )
   }

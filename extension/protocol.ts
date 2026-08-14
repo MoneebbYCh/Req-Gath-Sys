@@ -15,7 +15,7 @@ export type ExtensionToWebviewMessage =
   | { type: 'navigateTo'; view: View }
   | { type: 'chatResponse'; text: string }
   | { type: 'chatStatus'; text: string | null }
-  | { type: 'workspaceInfo'; path: string; name: string }
+  | { type: 'workspaceInfo'; path: string; name: string; available: boolean }
 
 export type WebviewToExtensionMessage =
   | { type: 'saveCanvas'; phase: string; data: unknown }
@@ -26,3 +26,4 @@ export type WebviewToExtensionMessage =
   | { type: 'ready' }
   | { type: 'loadWorkspaceInfo' }
   | { type: 'chatMessage'; text: string; phase: string; history?: ChatHistoryTurn[] }
+  | { type: 'exportMarkdown'; phase: string; markdown: string; suggestedName: string }

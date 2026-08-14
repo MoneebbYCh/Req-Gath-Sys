@@ -9,8 +9,11 @@ import {
   saveDocTypes,
   saveForm,
 } from './formStateManager'
+import { resolveWorkspaceRoot } from './workspaceRoot'
 import { processChat } from './ai/agent'
 import type { WebviewToExtensionMessage, ExtensionToWebviewMessage } from './protocol'
+
+const log = (msg: string) => console.log('[CharterAi]', msg)
 
 export function activate(context: vscode.ExtensionContext) {
   let panel: vscode.WebviewPanel | undefined
@@ -44,7 +47,23 @@ export function activate(context: vscode.ExtensionContext) {
   }
 
   async function handleMessage(msg: WebviewToExtensionMessage): Promise<void> {
+    log(`message: ${msg.type}`)
+    if (msg.type === 'loadWorkspaceInfo') {
+      await ensureWorkspaceFolder()
+      return
+    }
+
     const ws = workspaceRoot()
+    // No folder open: refuse to persist into the extension install directory.
+    // Persistence and chat need a real workspace root.
+    if (!ws) {
+      log('no workspace folder — refusing to persist')
+      postMessage({
+        type: 'chatStatus',
+        text: 'Open a folder to use Charter Ai.',
+      })
+      return
+    }
 
     switch (msg.type) {
       case 'loadDocTypes': {
@@ -65,8 +84,31 @@ export function activate(context: vscode.ExtensionContext) {
         await saveForm(ws, msg.phase, msg.data)
         break
       }
-      case 'loadWorkspaceInfo': {
-        await ensureWorkspaceFolder()
+      case 'exportMarkdown': {
+        const safeName =
+          msg.suggestedName.replace(/[^\w\- ]+/g, '').trim() || 'document'
+        const defaultUri = vscode.Uri.joinPath(vscode.Uri.file(ws), `${safeName}.md`)
+        log(`export: suggested "${safeName}.md" in ${ws}`)
+        const uri = await vscode.window.showSaveDialog({
+          defaultUri,
+          filters: { Markdown: ['md'] },
+        })
+        if (!uri) {
+          log('export: cancelled by user')
+          break
+        }
+        try {
+          await vscode.workspace.fs.writeFile(
+            uri,
+            new TextEncoder().encode(msg.markdown),
+          )
+          log(`export: wrote ${uri.fsPath} (${msg.markdown.length} chars)`)
+          vscode.window.showInformationMessage('Exported document to Markdown.')
+        } catch (err) {
+          const errorMsg = err instanceof Error ? err.message : String(err)
+          log(`export: FAILED ${errorMsg}`)
+          vscode.window.showErrorMessage(`Export failed: ${errorMsg}`)
+        }
         break
       }
       case 'chatMessage': {
@@ -106,15 +148,20 @@ export function activate(context: vscode.ExtensionContext) {
     }
   }
 
-  function workspaceRoot(): string {
-    const folder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
-    if (folder) return folder
-    return context.extensionPath
+  function workspaceRoot(): string | null {
+    // Never fall back to the extension install directory — that writes state
+    // into the bundle location when no folder is open.
+    return resolveWorkspaceRoot(vscode.workspace.workspaceFolders?.[0]?.uri.fsPath)
   }
 
   /** Create `.charter-ai/` in the open folder (if needed) and tell the webview the path. */
   async function ensureWorkspaceFolder(): Promise<void> {
     const ws = workspaceRoot()
+    if (!ws) {
+      log('workspaceInfo: available=false (no folder)')
+      postMessage({ type: 'workspaceInfo', path: '', name: '', available: false })
+      return
+    }
     try {
       await initWorkspace(ws)
     } catch {
@@ -123,7 +170,7 @@ export function activate(context: vscode.ExtensionContext) {
     const folder = vscode.workspace.workspaceFolders?.[0]
     const fullPath = folder?.uri.fsPath ?? ws
     const name = folder?.name ?? path.basename(fullPath)
-    postMessage({ type: 'workspaceInfo', path: fullPath, name })
+    postMessage({ type: 'workspaceInfo', path: fullPath, name, available: true })
   }
 
   context.subscriptions.push(
@@ -141,6 +188,9 @@ export function activate(context: vscode.ExtensionContext) {
         {
           enableScripts: true,
           retainContextWhenHidden: true,
+          // window.alert / window.prompt are no-ops in the webview without this
+          // (Save Template prompt and Export notifications silently died).
+          allowModals: true,
           localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, 'dist')],
         },
       )
