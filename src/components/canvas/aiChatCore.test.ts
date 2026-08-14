@@ -158,6 +158,29 @@ describe('resolveAiChatPlan', () => {
     expect(plan.removeIds).toEqual(['c1', 'n0'])
   })
 
+  it('upgrades a cursor-targeted modify to the selection when the cursor is inside it', () => {
+    // Model fell back to the caret block (last selected paragraph) despite the
+    // selection: the user's pointer is the whole selection, never just the caret.
+    const selCtx: AiChatContextPayload = {
+      ...ctx,
+      selection: { blockIds: ['c1', 's1'], markdown: 'Both paragraphs selected' },
+    }
+    const plan = resolveAiChatPlan({ kind: 'modify', target: 'cursor' }, selCtx, 'chat', {
+      liveBlocks: live(['c1', 's1', 'n0']),
+    })
+    expect(plan.mode).toBe('replace')
+    expect(plan.removeIds).toEqual(['c1', 's1'])
+    expect(plan.note).toMatch(/selection/i)
+  })
+
+  it('keeps the cursor target when the cursor is outside the selection', () => {
+    const outside: AiChatContextPayload = { ...ctx, cursorBlock: { id: 'x1', text: 'Elsewhere' } }
+    const plan = resolveAiChatPlan({ kind: 'modify', target: 'cursor' }, outside, 'chat', {
+      liveBlocks: live(['x1', 's1']),
+    })
+    expect(plan.removeIds).toEqual(['x1'])
+  })
+
   it('modify cursor keeps a non-empty following block (real paragraph)', () => {
     const withText: AiChatContextPayload = { ...ctx, nextBlock: { id: 'n0', text: 'Real paragraph' } }
     const plan = resolveAiChatPlan({ kind: 'modify', target: 'cursor' }, withText, 'chat', { liveBlocks: live(['c1', 'n0']) })

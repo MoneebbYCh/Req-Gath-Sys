@@ -286,8 +286,23 @@ export function resolveAiChatPlan(
     return { mode: 'none', removeIds: [], insertAfterId: null }
   }
 
+  // The user's pointer is the selection: when a selection exists and contains the
+  // caret block, a cursor-targeted result (the model's common fallback) must be
+  // applied to the whole selection, not just the last selected paragraph.
+  let target = result.target
+  let note: string | undefined
   if (
-    result.target === 'cursor' &&
+    target === 'cursor' &&
+    ctx.selection &&
+    ctx.cursorBlock &&
+    ctx.selection.blockIds.includes(ctx.cursorBlock.id)
+  ) {
+    target = 'selection'
+    note = 'Applied to your selection.'
+  }
+
+  if (
+    target === 'cursor' &&
     ctx.cursorBlock?.text &&
     options.cursorLiveText !== undefined &&
     options.cursorLiveText !== ctx.cursorBlock.text
@@ -301,9 +316,9 @@ export function resolveAiChatPlan(
   }
 
   const live = new Set(options.liveBlocks.map((b) => String(b.id)))
-  const removeIds = targetIds(result.target, ctx).filter((id) => live.has(id))
+  const removeIds = targetIds(target, ctx).filter((id) => live.has(id))
   if (removeIds.length === 0) {
     return { mode: 'after-chat', removeIds: [], insertAfterId: chatBlockId }
   }
-  return { mode: 'replace', removeIds, insertAfterId: null }
+  return { mode: 'replace', removeIds, insertAfterId: null, ...(note ? { note } : {}) }
 }

@@ -32,6 +32,7 @@ CONTEXT PRIORITY: when the user says "this / here / it / the paragraph", the int
 
 DECIDE:
 - "rewrite / make shorter / fix grammar / improve / make more professional" with an obvious referent → kind "modify" with the narrowest fitting target (selection > cursor > section). Return the FULL replacement markdown for that target only.
+- NEVER use target "cursor" when a selection is provided: the cursor block is the caret's paragraph inside that selection, so a cursor-targeted edit would rewrite only the LAST selected paragraph. Use "selection" instead.
 - Do NOT ask a clarification question when the context makes the target obvious.
 - Only use kind "clarify" when the target is genuinely ambiguous (e.g. "improve this" with no selection and several candidates). Prefer picking the narrowest sensible target over asking.
 - If you would need more than one clarification, instead pick the most reasonable target and state your assumption in "text".
