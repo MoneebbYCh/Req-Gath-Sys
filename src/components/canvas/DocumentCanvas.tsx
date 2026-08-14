@@ -155,7 +155,13 @@ function DocumentCanvasInner({
         setBlip(null)
         return
       }
-      setBlip({ top: rect.top, left: rect.left, blockIds: ids })
+      // Host-relative coords, so the blip survives any ancestor transforms.
+      const hostRect = hostRef.current?.getBoundingClientRect()
+      setBlip({
+        top: rect.top - (hostRect?.top ?? 0),
+        left: rect.left - (hostRect?.left ?? 0),
+        blockIds: ids,
+      })
     })
     return () => unsubscribe?.()
   }, [editor])
@@ -198,12 +204,9 @@ function DocumentCanvasInner({
         <button
           type="button"
           className="rg-ai-blip"
-          style={() => {
-            const hostRect = hostRef.current?.getBoundingClientRect()
-            return {
-              top: Math.max(6, blip.top - (hostRect?.top ?? 0) - 6),
-              left: Math.max(4, blip.left - (hostRect?.left ?? 0)),
-            }
+          style={{
+            top: Math.max(6, blip.top - 6),
+            left: Math.max(4, blip.left),
           }}
           // Keep the editor selection alive while the blip is clicked.
           onMouseDown={(e) => e.preventDefault()}
