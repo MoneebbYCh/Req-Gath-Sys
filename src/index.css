@@ -2719,3 +2719,124 @@ body:has(.chat-panel--open) .chat-toggle {
   margin-left: auto;
 }
 
+
+/* ===== Ask AI (in-document chat block) ===== */
+.rg-ai-chat {
+  position: relative;
+  border: 1px dashed var(--bn-border-color, #c8ccd4);
+  border-radius: 10px;
+  padding: 0.75rem 0.9rem;
+  background: #fafbfc;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+.rg-ai-chat .rg-block-actions {
+  top: -10px;
+}
+.rg-ai-chat-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: flex-start;
+}
+.rg-ai-chat-row--end {
+  justify-content: flex-end;
+  margin-top: 0.5rem;
+}
+.rg-ai-chat-input {
+  flex: 1;
+  min-height: 2.2rem;
+  max-height: 8rem;
+  resize: vertical;
+  border: 1px solid #ccd1d9;
+  border-radius: 8px;
+  padding: 0.5rem 0.65rem;
+  font: inherit;
+  font-size: 0.9rem;
+  line-height: 1.45;
+  background: #fff;
+  color: #1f2430;
+}
+.rg-ai-chat-input:focus {
+  outline: none;
+  border-color: #4b7bec;
+  box-shadow: 0 0 0 2px rgba(75, 123, 236, 0.18);
+}
+.rg-ai-chat-btn {
+  border: 1px solid #4b7bec;
+  background: #4b7bec;
+  color: #fff;
+  border-radius: 8px;
+  padding: 0.45rem 0.9rem;
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.rg-ai-chat-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.rg-ai-chat-btn--ghost {
+  background: transparent;
+  border-color: #ccd1d9;
+  color: #5b6472;
+}
+.rg-ai-chat-hint {
+  margin: 0.4rem 0 0;
+  font-size: 0.75rem;
+  color: #8a92a0;
+}
+.rg-ai-chat-clarify {
+  margin: 0 0 0.5rem;
+  font-size: 0.9rem;
+  color: #5b6472;
+  background: #eef3fe;
+  border-left: 3px solid #4b7bec;
+  border-radius: 0 6px 6px 0;
+  padding: 0.45rem 0.6rem;
+}
+.rg-ai-chat-status {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+.rg-ai-chat-request {
+  font-size: 0.85rem;
+  color: #5b6472;
+  font-style: italic;
+}
+.rg-ai-chat-answer {
+  margin: 0;
+  white-space: pre-wrap;
+  font-size: 0.92rem;
+  line-height: 1.5;
+  color: #1f2430;
+  flex-basis: 100%;
+}
+.rg-ai-chat-error {
+  margin: 0;
+  color: #b3382c;
+  font-size: 0.88rem;
+  flex-basis: 100%;
+}
+.rg-ai-chat-done {
+  margin: 0;
+  color: #1e7d46;
+  font-size: 0.88rem;
+  font-weight: 600;
+}
+.rg-ai-chat-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid #ccd1d9;
+  border-top-color: #4b7bec;
+  border-radius: 50%;
+  animation: rg-ai-chat-spin 0.8s linear infinite;
+  flex-shrink: 0;
+}
+@keyframes rg-ai-chat-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

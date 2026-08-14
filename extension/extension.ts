@@ -11,6 +11,7 @@ import {
 } from './formStateManager'
 import { resolveWorkspaceRoot } from './workspaceRoot'
 import { processChat } from './ai/agent'
+import { processInlineChat } from './ai/inlineChat'
 import type { WebviewToExtensionMessage, ExtensionToWebviewMessage } from './protocol'
 
 const log = (msg: string) => console.log('[CharterAi]', msg)
@@ -58,6 +59,15 @@ export function activate(context: vscode.ExtensionContext) {
     // Persistence and chat need a real workspace root.
     if (!ws) {
       log('no workspace folder — refusing to persist')
+      if (msg.type === 'aiChatRequest') {
+        postMessage({
+          type: 'aiChatResponse',
+          requestId: msg.requestId,
+          kind: 'error',
+          error: 'Open a folder to use Charter Ai.',
+        })
+        return
+      }
       postMessage({
         type: 'chatStatus',
         text: 'Open a folder to use Charter Ai.',
@@ -142,6 +152,28 @@ export function activate(context: vscode.ExtensionContext) {
           const errorMsg = err instanceof Error ? err.message : String(err)
           postMessage({ type: 'chatStatus', text: null })
           postMessage({ type: 'chatResponse', text: `Error: ${errorMsg}` })
+        }
+        break
+      }
+      case 'aiChatRequest': {
+        try {
+          const apiKey = (await getApiKey(context)) ?? ''
+          const result = await processInlineChat({
+            text: msg.text,
+            context: msg.context,
+            apiKey,
+            workspaceRoot: ws,
+          })
+          postMessage({ type: 'aiChatResponse', requestId: msg.requestId, ...result })
+        } catch (err) {
+          const errorMsg = err instanceof Error ? err.message : String(err)
+          log(`aiChat FAILED ${errorMsg}`)
+          postMessage({
+            type: 'aiChatResponse',
+            requestId: msg.requestId,
+            kind: 'error',
+            error: errorMsg,
+          })
         }
         break
       }

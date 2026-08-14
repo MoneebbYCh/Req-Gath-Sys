@@ -57,7 +57,7 @@ function extractMermaidFromBlock(
   block: Record<string, unknown>,
   props: Record<string, unknown>,
 ): { code: string; title: string } {
-  let code = ''
+  let code: string
   let title = typeof props.title === 'string' ? props.title : ''
 
   const tryString = (v: unknown) =>
@@ -282,6 +282,12 @@ export function sanitizeCanvasBlocks(blocks: BlockNoteBlock[]): PartialBlock[] {
     if (TYPE_ALIASES[type]) {
       type = TYPE_ALIASES[type]
       block.type = type
+    }
+
+    if (type === 'aiChat') {
+      // Ephemeral chat UI must never survive a load — becomes an empty paragraph.
+      out.push(paragraphFallback(''))
+      continue
     }
 
     if (!ALLOWED_TYPES.has(type)) {

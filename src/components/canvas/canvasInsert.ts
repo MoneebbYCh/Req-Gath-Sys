@@ -6,6 +6,7 @@ import {
 import type { DefaultReactSuggestionItem } from '@blocknote/react'
 import { canvasSchema } from './schema'
 import { DEFAULT_DIAGRAM_CODE } from './blocks/Diagram'
+import { captureAiChatContext, type BlockLike, type CapturedSelection } from './aiChatCore'
 
 export type CanvasEditor = BlockNoteEditor<
   typeof canvasSchema.blockSchema,
@@ -178,6 +179,35 @@ export function getCanvasSlashMenuItems(editor: CanvasEditor): DefaultReactSugge
     group: 'Charter shapes',
     onItemClick: () => item.insert(editor),
   }))
+}
+
+/**
+ * "Ask AI" slash item. Context is captured BEFORE insertOrUpdateBlockForSlashMenu
+ * splits the current paragraph, so the cursor block still contains the text the
+ * user typed before the "/".
+ */
+export function getAiSlashMenuItem(
+  editor: CanvasEditor,
+  getLastSelection: () => CapturedSelection | null,
+): DefaultReactSuggestionItem {
+  return {
+    title: 'Ask AI',
+    subtext: 'Rewrite, generate, or answer right here',
+    aliases: ['ai', 'assistant', 'chat', 'rewrite'],
+    group: 'AI',
+    onItemClick: () => {
+      const ctx = captureAiChatContext(editor.document as BlockLike[], {
+        selection: getLastSelection(),
+      })
+      insertOrUpdateBlockForSlashMenu(editor, {
+        type: 'aiChat',
+        props: {
+          placeholder: 'Ask AI what you would like to change or create…',
+          contextJson: JSON.stringify(ctx),
+        },
+      })
+    },
+  }
 }
 
 export function focusCanvasBlock(editor: CanvasEditor, blockId: string): void {
