@@ -126,6 +126,6 @@ export const createScopeBounds = createReactBlockSpec(
     content: 'none',
   },
   {
-    render: (props) => <ScopeBoundsView block={props.block} editor={props.editor} />,
+    render: (props) => <ScopeBoundsView block={props.block} editor={props.editor as never} />,
   },
 )

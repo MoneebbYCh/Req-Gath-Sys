@@ -65,6 +65,25 @@ describe('captureAiChatContext', () => {
     expect(ctx.selection).toBeUndefined()
   })
 
+  it('trusts a fresh selection even when the cursor text is intact (blip path)', () => {
+    // Blip: the user selected text and clicked Ask AI — nothing was typed over it,
+    // so the cursor block still holds the selected paragraph.
+    const doc = [block('p1', 'paragraph', 'Selected paragraph.'), block('p2', 'paragraph', 'Next.')]
+    const sel = { blockIds: ['p1'], capturedAt: Date.now() }
+    const ctx = captureAiChatContext(doc, 'p1', sel, Date.now(), { trustSelection: true })
+    expect(ctx.selection?.blockIds).toEqual(['p1'])
+    expect(ctx.selection?.markdown).toContain('Selected paragraph.')
+    expect(ctx.cursorBlock?.id).toBe('p1')
+    expect(ctx.cursorBlock?.text).toBe('Selected paragraph.')
+  })
+
+  it('still requires freshness for a trusted selection (blip path)', () => {
+    const doc = [block('p1', 'paragraph', 'Selected paragraph.')]
+    const sel = { blockIds: ['p1'], capturedAt: Date.now() - 60_000 }
+    const ctx = captureAiChatContext(doc, 'p1', sel, Date.now(), { trustSelection: true })
+    expect(ctx.selection).toBeUndefined()
+  })
+
   it('computes the section between heading boundaries when invoked inside a heading', () => {
     const doc = [
       block('h1', 'heading', 'Top', { level: 1 }),

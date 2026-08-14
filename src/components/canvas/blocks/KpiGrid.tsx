@@ -164,6 +164,6 @@ export const createKpiGrid = createReactBlockSpec(
     content: 'none',
   },
   {
-    render: (props) => <KpiGridView block={props.block} editor={props.editor} />,
+    render: (props) => <KpiGridView block={props.block} editor={props.editor as never} />,
   },
 )

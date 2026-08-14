@@ -195,6 +195,6 @@ export const createStakeholderTable = createReactBlockSpec(
     content: 'none',
   },
   {
-    render: (props) => <StakeholderTableView block={props.block} editor={props.editor} />,
+    render: (props) => <StakeholderTableView block={props.block} editor={props.editor as never} />,
   },
 )

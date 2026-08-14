@@ -1,7 +1,6 @@
 import {
   insertOrUpdateBlockForSlashMenu,
   type BlockNoteEditor,
-  type PartialBlock,
 } from '@blocknote/core'
 import type { DefaultReactSuggestionItem } from '@blocknote/react'
 import { canvasSchema } from './schema'
@@ -23,8 +22,8 @@ export interface CanvasInsertItem {
   insert: (editor: CanvasEditor) => void
 }
 
-function insert(editor: CanvasEditor, block: PartialBlock) {
-  insertOrUpdateBlockForSlashMenu(editor, block)
+function insert(editor: CanvasEditor, block: Record<string, unknown>) {
+  insertOrUpdateBlockForSlashMenu(editor as never, block as never)
 }
 
 /** Shared catalog for slash menu + tools sidebar. */
@@ -189,8 +188,15 @@ export function getCanvasSlashMenuItems(editor: CanvasEditor): DefaultReactSugge
 export function insertAiChatBlock(
   editor: CanvasEditor,
   selection: CapturedSelection | null,
+  options: { trustSelection?: boolean } = {},
 ): void {
-  const ctx = captureAiChatContext(editor.document as BlockLike[], { selection })
+  const ctx = captureAiChatContext(
+    editor.document as BlockLike[],
+    String(editor.getTextCursorPosition().block.id),
+    selection,
+    Date.now(),
+    options,
+  )
   insertOrUpdateBlockForSlashMenu(editor, {
     type: 'aiChat',
     props: {

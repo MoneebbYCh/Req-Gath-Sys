@@ -102,7 +102,7 @@ function DocumentCanvasInner({
           type: 'aiChat',
           props: {
             placeholder: 'What would you like to create?',
-            contextJson: JSON.stringify(captureAiChatContext([], { selection: null })),
+            contextJson: JSON.stringify(captureAiChatContext([], '', null, Date.now())),
           },
         },
         ...base,
@@ -211,10 +211,11 @@ function DocumentCanvasInner({
           // Keep the editor selection alive while the blip is clicked.
           onMouseDown={(e) => e.preventDefault()}
           onClick={() => {
-            insertAiChatBlock(editor as CanvasEditor, {
-              blockIds: blip.blockIds,
-              capturedAt: Date.now(),
-            })
+            insertAiChatBlock(
+              editor as CanvasEditor,
+              { blockIds: blip.blockIds, capturedAt: Date.now() },
+              { trustSelection: true },
+            )
             setBlip(null)
           }}
         >

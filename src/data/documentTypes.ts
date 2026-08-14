@@ -19,6 +19,8 @@ export interface DocumentTypeMeta {
   fileName: string
   /** Sort order across the whole pipeline. */
   order: number
+  /** Pre-workspace-scoping localStorage key, migrated on first read. */
+  legacyStorageKey?: string
   next?: { page: string; label: string }
 }
 

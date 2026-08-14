@@ -23,6 +23,12 @@ export interface CaptureOptions {
   docMaxChars?: number
   /** How old a captured selection may be to still be trusted. */
   selectionMaxAgeMs?: number
+  /**
+   * Trust a fresh selection even when the cursor block still has its text.
+   * True for the selection blip (selection untouched, nothing typed over it);
+   * false for the slash menu (selection was replaced by "/").
+   */
+  trustSelection?: boolean
 }
 
 const SHAPE_TYPES = new Set([
@@ -189,14 +195,15 @@ export function captureAiChatContext(
     cursorIndex >= 0 && cursorIndex < blocks.length - 1 ? blocks[cursorIndex + 1] : null
 
   // The slash character replaced the user's selection. A captured selection is
-  // trusted only when it is fresh AND the cursor block now holds just "/" —
-  // i.e. the user selected text, typed "/" over it, and opened the menu.
+  // trusted only when it is fresh AND (blip path: trustSelection — the text is
+  // still intact) OR (slash path: the cursor block now holds just "/" — i.e.
+  // the user selected text, typed "/" over it, and opened the menu).
   let selectionPayload: AiChatContextPayload['selection']
   if (
     selection &&
     selection.blockIds.length > 0 &&
     now - selection.capturedAt <= selectionMaxAgeMs &&
-    cursorText === '' &&
+    (options.trustSelection === true || cursorText === '') &&
     selection.blockIds.every((id) => byId.has(id))
   ) {
     const selBlocks = selection.blockIds
