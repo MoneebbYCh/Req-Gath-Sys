@@ -182,6 +182,25 @@ export function getCanvasSlashMenuItems(editor: CanvasEditor): DefaultReactSugge
 }
 
 /**
+ * Insert an "Ask AI" chat block, capturing document context at the invocation
+ * point. Shared by the slash menu and the selection blip so both hand the AI
+ * exactly the same context.
+ */
+export function insertAiChatBlock(
+  editor: CanvasEditor,
+  selection: CapturedSelection | null,
+): void {
+  const ctx = captureAiChatContext(editor.document as BlockLike[], { selection })
+  insertOrUpdateBlockForSlashMenu(editor, {
+    type: 'aiChat',
+    props: {
+      placeholder: 'Ask AI what you would like to change or create…',
+      contextJson: JSON.stringify(ctx),
+    },
+  })
+}
+
+/**
  * "Ask AI" slash item. Context is captured BEFORE insertOrUpdateBlockForSlashMenu
  * splits the current paragraph, so the cursor block still contains the text the
  * user typed before the "/".
@@ -195,18 +214,7 @@ export function getAiSlashMenuItem(
     subtext: 'Rewrite, generate, or answer right here',
     aliases: ['ai', 'assistant', 'chat', 'rewrite'],
     group: 'AI',
-    onItemClick: () => {
-      const ctx = captureAiChatContext(editor.document as BlockLike[], {
-        selection: getLastSelection(),
-      })
-      insertOrUpdateBlockForSlashMenu(editor, {
-        type: 'aiChat',
-        props: {
-          placeholder: 'Ask AI what you would like to change or create…',
-          contextJson: JSON.stringify(ctx),
-        },
-      })
-    },
+    onItemClick: () => insertAiChatBlock(editor, getLastSelection()),
   }
 }
 
