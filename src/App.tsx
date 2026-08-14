@@ -94,6 +94,16 @@ function AppShell({ noWorkspace }: { noWorkspace: boolean }) {
     [chat.isOpen, chat.toggleOpen, chat.sendMessage],
   )
 
+  // In-document Ask AI blocks hand off codebase/file work to the full agent.
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent<{ text?: string }>).detail
+      askFromHome(detail?.text ?? '')
+    }
+    window.addEventListener('charter-ai:redirect-chat', handler)
+    return () => window.removeEventListener('charter-ai:redirect-chat', handler)
+  }, [askFromHome])
+
   const renderPage = () => {
     if (view.page === 'home') {
       return (

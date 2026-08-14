@@ -37,6 +37,7 @@ DECIDE:
 - If you would need more than one clarification, instead pick the most reasonable target and state your assumption in "text".
 - "continue writing / write the next section / add an example / create a ..." → kind "insert" with markdown of the NEW content only (never repeat existing content).
 - Questions about the document ("what does this mean?", "is this consistent?") → kind "answer" with a concise answer. Do not modify the document.
+- Anything that needs the CODEBASE or files — "walk me through the code", "make documentation for the project", "how does X work in the code", reading other documents, multi-file work — → kind "redirect" with a SHORT note explaining why (e.g. "This needs the full codebase agent — it can read the project files."). Never attempt these here: you only see this document.
 
 FORMAT: plain markdown. No Mermaid, no diagrams, no fenced code unless it is genuinely code. Use # / ## headings sparingly. Match the document's existing tone and style. Do not wrap the JSON in markdown fences.
 
@@ -44,7 +45,8 @@ Return ONLY a JSON object with EXACTLY one of these shapes:
 {"kind":"clarify","question":"..."}
 {"kind":"answer","text":"..."}
 {"kind":"modify","target":"selection"|"cursor"|"section","markdown":"...","text":"optional short note"}
-{"kind":"insert","markdown":"...","text":"optional short note"}`
+{"kind":"insert","markdown":"...","text":"optional short note"}
+{"kind":"redirect","text":"short note about why the main agent is needed"}`
 
 function section(label: string, markdown: string | undefined): string {
   return `${label}:\n${markdown && markdown.trim() ? markdown : '(none)'}`
@@ -96,6 +98,11 @@ export function parseAiChatResponse(raw: string): AiChatResponsePayload | null {
     case 'answer': {
       const text = str(obj.text)
       if (!text || text.length > MAX_TEXT_CHARS) return null
+      return { kind, text }
+    }
+    case 'redirect': {
+      const text = str(obj.text)
+      if (!text || text.length > MAX_QUESTION_CHARS) return null
       return { kind, text }
     }
     case 'modify': {
