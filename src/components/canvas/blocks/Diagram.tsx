@@ -135,7 +135,7 @@ export const createDiagram = createReactBlockSpec(
     content: 'none',
   },
   {
-    render: (props) => <DiagramView block={props.block} editor={props.editor} />,
+    render: (props) => <DiagramView block={props.block} editor={props.editor as never} />,
   },
 )
 

@@ -49,7 +49,7 @@
     "build:extension": "esbuild extension/extension.ts --bundle --outfile=out/extension.cjs --external:vscode --external:mermaid --external:@vscode/ripgrep --format=cjs --platform=node --tsconfig=tsconfig.extension.json",
     "build": "npm run build:extension && npm run build:webview",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "typecheck": "tsc -b tsconfig.json",
     "lint": "eslint .",
     "preview": "vite preview",
     "vscode:prepublish": "npm run build"

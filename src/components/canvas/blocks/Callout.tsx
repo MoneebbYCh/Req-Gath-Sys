@@ -124,7 +124,7 @@ export const createCallout = createReactBlockSpec(
   },
   {
     render: (props) => (
-      <CalloutView block={props.block} editor={props.editor} contentRef={props.contentRef} />
+      <CalloutView block={props.block} editor={props.editor as never} contentRef={props.contentRef} />
     ),
   },
 )

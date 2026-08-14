@@ -62,7 +62,7 @@ function AiChatView(props: {
 
   const removeBlock = () => {
     const block = editor.document.find((b) => String(b.id) === blockId)
-    if (block) editor.removeBlocks([block])
+    if (block) editor.removeBlocks([block as { id: string }])
   }
 
   const clearPending = () => {
@@ -96,7 +96,7 @@ function AiChatView(props: {
     result: AiChatResponsePayload,
   ): { focusId?: string; note?: string } | null => {
     if (!result.markdown) return null
-    let blocks: { id: string }[]
+    let blocks: { id?: string }[]
     try {
       blocks = editor.tryParseMarkdownToBlocks(result.markdown)
     } catch {

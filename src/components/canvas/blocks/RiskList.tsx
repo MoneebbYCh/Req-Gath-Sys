@@ -197,6 +197,6 @@ export const createRiskList = createReactBlockSpec(
     content: 'none',
   },
   {
-    render: (props) => <RiskListView block={props.block} editor={props.editor} />,
+    render: (props) => <RiskListView block={props.block} editor={props.editor as never} />,
   },
 )
