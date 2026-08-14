@@ -49,6 +49,10 @@ describe('parseAiChatResponse', () => {
       kind: 'insert',
       markdown: 'New section',
     })
+    expect(parseAiChatResponse('{"kind":"redirect","text":"Needs the codebase agent."}')).toEqual({
+      kind: 'redirect',
+      text: 'Needs the codebase agent.',
+    })
   })
 
   it('accepts fenced JSON', () => {
@@ -63,6 +67,7 @@ describe('parseAiChatResponse', () => {
     expect(parseAiChatResponse('{"kind":"answer","text":""}')).toBeNull()
     expect(parseAiChatResponse('{"kind":"modify","target":"nope","markdown":"x"}')).toBeNull()
     expect(parseAiChatResponse('{"kind":"modify","target":"cursor"}')).toBeNull() // no markdown
+    expect(parseAiChatResponse('{"kind":"redirect","text":""}')).toBeNull()
     expect(parseAiChatResponse('{"kind":"dance"}')).toBeNull()
   })
 
@@ -133,6 +138,22 @@ describe('processInlineChat', () => {
     })
     expect(result).toEqual({ kind: 'error', error: expect.stringMatching(/empty/i) })
     expect(mockCall).not.toHaveBeenCalled()
+  })
+
+  it('surfaces a redirect when the model defers to the main agent', async () => {
+    mockCall.mockResolvedValue(
+      '{"kind":"redirect","text":"This needs the full codebase agent."}',
+    )
+    const result = await processInlineChat({
+      text: 'Walk me through the code and make documentation',
+      context: CTX,
+      apiKey: 'k',
+      workspaceRoot: dir,
+    })
+    expect(result).toEqual({
+      kind: 'redirect',
+      text: 'This needs the full codebase agent.',
+    })
   })
 
   it('reads provider/model from the workspace config', async () => {

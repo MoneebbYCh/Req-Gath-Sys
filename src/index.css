@@ -2840,3 +2840,14 @@ body:has(.chat-panel--open) .chat-toggle {
     transform: rotate(360deg);
   }
 }
+.rg-ai-chat-redirect {
+  margin: 0;
+  font-size: 0.9rem;
+  line-height: 1.5;
+  color: #1f2430;
+  background: #fdf3e3;
+  border-left: 3px solid #d98e04;
+  border-radius: 0 6px 6px 0;
+  padding: 0.45rem 0.6rem;
+  flex-basis: 100%;
+}

@@ -12,7 +12,7 @@ export interface ChatHistoryTurn {
 // --- In-document AI chat (/Chat block) wire contract ------------------------
 
 export type AiChatTarget = 'selection' | 'cursor' | 'section'
-export type AiChatResponseKind = 'clarify' | 'answer' | 'modify' | 'insert' | 'error'
+export type AiChatResponseKind = 'clarify' | 'answer' | 'modify' | 'insert' | 'redirect' | 'error'
 
 /** Document context captured at the AI chat invocation point (webview-built). */
 export interface AiChatContextPayload {

@@ -20950,6 +20950,7 @@ DECIDE:
 - If you would need more than one clarification, instead pick the most reasonable target and state your assumption in "text".
 - "continue writing / write the next section / add an example / create a ..." \u2192 kind "insert" with markdown of the NEW content only (never repeat existing content).
 - Questions about the document ("what does this mean?", "is this consistent?") \u2192 kind "answer" with a concise answer. Do not modify the document.
+- Anything that needs the CODEBASE or files \u2014 "walk me through the code", "make documentation for the project", "how does X work in the code", reading other documents, multi-file work \u2014 \u2192 kind "redirect" with a SHORT note explaining why (e.g. "This needs the full codebase agent \u2014 it can read the project files."). Never attempt these here: you only see this document.
 
 FORMAT: plain markdown. No Mermaid, no diagrams, no fenced code unless it is genuinely code. Use # / ## headings sparingly. Match the document's existing tone and style. Do not wrap the JSON in markdown fences.
 
@@ -20957,7 +20958,8 @@ Return ONLY a JSON object with EXACTLY one of these shapes:
 {"kind":"clarify","question":"..."}
 {"kind":"answer","text":"..."}
 {"kind":"modify","target":"selection"|"cursor"|"section","markdown":"...","text":"optional short note"}
-{"kind":"insert","markdown":"...","text":"optional short note"}`;
+{"kind":"insert","markdown":"...","text":"optional short note"}
+{"kind":"redirect","text":"short note about why the main agent is needed"}`;
 function section(label, markdown) {
   return `${label}:
 ${markdown && markdown.trim() ? markdown : "(none)"}`;
@@ -21002,6 +21004,11 @@ function parseAiChatResponse(raw) {
     case "answer": {
       const text = str2(obj.text);
       if (!text || text.length > MAX_TEXT_CHARS) return null;
+      return { kind: kind2, text };
+    }
+    case "redirect": {
+      const text = str2(obj.text);
+      if (!text || text.length > MAX_QUESTION_CHARS) return null;
       return { kind: kind2, text };
     }
     case "modify": {

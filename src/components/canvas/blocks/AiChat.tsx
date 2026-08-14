@@ -18,6 +18,7 @@ type AiChatState =
   | { phase: 'answer'; text: string }
   | { phase: 'clarify'; question: string; originalText: string }
   | { phase: 'error'; message: string; retryText?: string }
+  | { phase: 'redirect'; note: string; requestText: string }
   | { phase: 'done'; note?: string; focusId?: string }
 
 /** Minimal structural editor surface the block needs (kept type-light like Callout). */
@@ -150,6 +151,10 @@ function AiChatView(props: {
       case 'error':
         setState({ phase: 'error', message: msg.error ?? 'Something went wrong.', retryText: sentText })
         break
+      case 'redirect':
+        // Hand off to the full agent: it has file tools and can act on the code.
+        setState({ phase: 'redirect', note: msg.text ?? '', requestText: sentText })
+        break
     }
   }
 
@@ -210,6 +215,15 @@ function AiChatView(props: {
   }
 
   const retryText = state.phase === 'error' ? state.retryText : undefined
+
+  /** Open the main agent chat with the original request (AppShell listens). */
+  const redirectToAgent = () => {
+    const text = state.phase === 'redirect' ? state.requestText : ''
+    removeBlock()
+    window.dispatchEvent(
+      new CustomEvent('charter-ai:redirect-chat', { detail: { text } }),
+    )
+  }
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
@@ -339,6 +353,20 @@ function AiChatView(props: {
                 Retry
               </button>
             ) : null}
+            <button type="button" className="rg-ai-chat-btn rg-ai-chat-btn--ghost" onClick={removeBlock}>
+              Dismiss
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      {state.phase === 'redirect' ? (
+        <div className="rg-ai-chat-status" aria-live="polite">
+          <p className="rg-ai-chat-redirect">{state.note}</p>
+          <div className="rg-ai-chat-row rg-ai-chat-row--end">
+            <button type="button" className="rg-ai-chat-btn" onClick={redirectToAgent}>
+              Continue with full agent
+            </button>
             <button type="button" className="rg-ai-chat-btn rg-ai-chat-btn--ghost" onClick={removeBlock}>
               Dismiss
             </button>
