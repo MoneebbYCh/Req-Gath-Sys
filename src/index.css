@@ -1451,6 +1451,7 @@ body:has(.chat-panel--open) .chat-toggle {
 
 /* BlockNote: strip card chrome, stretch into an endless page */
 .bn-canvas-host {
+  position: relative;
   min-height: 70vh;
   animation: charter-canvas-fade-in 520ms ease-out 60ms both;
 }
@@ -2850,4 +2851,28 @@ body:has(.chat-panel--open) .chat-toggle {
   border-radius: 0 6px 6px 0;
   padding: 0.45rem 0.6rem;
   flex-basis: 100%;
+}
+/* ===== Ask AI selection blip ===== */
+.rg-ai-blip {
+  position: absolute;
+  z-index: 1000;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.3rem 0.7rem;
+  border: 1px solid #4b7bec;
+  border-radius: 999px;
+  background: #4b7bec;
+  color: #fff;
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+  transform: translateY(-100%);
+}
+.rg-ai-blip:hover {
+  background: #3d66d0;
+  border-color: #3d66d0;
 }

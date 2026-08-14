@@ -29,6 +29,7 @@ export {
   CANVAS_INSERT_ITEMS,
   getCanvasSlashMenuItems,
   getAiSlashMenuItem,
+  insertAiChatBlock,
   focusCanvasBlock,
   removeCanvasBlockById,
   type CanvasEditor,
