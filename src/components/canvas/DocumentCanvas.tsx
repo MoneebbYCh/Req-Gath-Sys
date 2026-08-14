@@ -13,9 +13,16 @@ import {
   canvasSchema,
   filterSuggestionItems,
   getCanvasSlashMenuItems,
+  getAiSlashMenuItem,
   type CanvasEditor,
 } from './schema'
 import { sanitizeCanvasBlocks } from './sanitizeBlocks'
+import {
+  blockText,
+  captureAiChatContext,
+  type BlockLike,
+  type CapturedSelection,
+} from './aiChatCore'
 
 interface DocumentCanvasProps {
   initialBlocks: BlockNoteBlock[]
@@ -77,13 +84,30 @@ function DocumentCanvasInner({
 }: DocumentCanvasProps) {
   const applyingExternal = useRef(false)
   const lastExternalRevision = useRef(0)
+  // Last non-collapsed selection, for the "rewrite what I selected" heuristic.
+  const lastSelectionRef = useRef<CapturedSelection | null>(null)
 
-  const initialContent = useMemo(
-    () => safeInitialContent(initialBlocks),
+  const initialContent = useMemo(() => {
+    const base = safeInitialContent(initialBlocks)
+    if (base.length === 0) return EMPTY_CONTENT
+    // Truly blank document: seed a self-contained "Ask AI" block (post-sanitize,
+    // so it is never mistaken for persisted content).
+    if (base.every((b) => !blockText(b as unknown as BlockLike).trim())) {
+      return [
+        {
+          type: 'aiChat',
+          props: {
+            placeholder: 'What would you like to create?',
+            contextJson: JSON.stringify(captureAiChatContext([], { selection: null })),
+          },
+        },
+        ...base,
+      ]
+    }
+    return base
     // Only for first mount — editor owns content after that.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [],
-  )
+  }, [])
 
   const editor = useCreateBlockNote({
     schema: canvasSchema,
@@ -98,6 +122,22 @@ function DocumentCanvasInner({
     onEditorReady?.(editor as CanvasEditor)
     return () => onEditorReady?.(null)
   }, [editor, onEditorReady])
+
+  // Track the last non-collapsed selection so /Ask AI can target "this".
+  useEffect(() => {
+    const unsubscribe = editor.onSelectionChange(() => {
+      const sel = editor.getSelection()
+      if (sel?.blocks?.length) {
+        lastSelectionRef.current = {
+          blockIds: sel.blocks.map((b) => String(b.id)),
+          capturedAt: Date.now(),
+        }
+      } else {
+        lastSelectionRef.current = null
+      }
+    })
+    return () => unsubscribe?.()
+  }, [editor])
 
   useEffect(() => {
     if (!externalBlocks || externalRevision === lastExternalRevision.current) return
@@ -128,7 +168,9 @@ function DocumentCanvasInner({
         slashMenu={false}
         onChange={() => {
           if (applyingExternal.current) return
-          onChange(editor.document as unknown as BlockNoteBlock[])
+          // aiChat blocks are ephemeral UI — never persist/save/export them.
+          const persisted = editor.document.filter((b) => b.type !== 'aiChat')
+          onChange(persisted as unknown as BlockNoteBlock[])
         }}
       >
         <SuggestionMenuController
@@ -136,6 +178,7 @@ function DocumentCanvasInner({
           getItems={async (query) =>
             filterSuggestionItems(
               [
+                getAiSlashMenuItem(editor as CanvasEditor, () => lastSelectionRef.current),
                 ...getDefaultReactSlashMenuItems(editor),
                 ...getCanvasSlashMenuItems(editor as CanvasEditor),
               ],

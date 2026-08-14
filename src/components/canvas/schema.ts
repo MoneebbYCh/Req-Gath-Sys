@@ -9,6 +9,7 @@ import { createStakeholderTable } from './blocks/StakeholderTable'
 import { createRiskList } from './blocks/RiskList'
 import { createScopeBounds } from './blocks/ScopeBounds'
 import { createDiagram } from './blocks/Diagram'
+import { createAiChat } from './blocks/AiChat'
 
 export const canvasSchema = BlockNoteSchema.create({
   blockSpecs: {
@@ -19,6 +20,7 @@ export const canvasSchema = BlockNoteSchema.create({
     stakeholderTable: createStakeholderTable(),
     riskList: createRiskList(),
     diagram: createDiagram(),
+    aiChat: createAiChat(),
   },
 })
 
@@ -26,6 +28,7 @@ export { filterSuggestionItems }
 export {
   CANVAS_INSERT_ITEMS,
   getCanvasSlashMenuItems,
+  getAiSlashMenuItem,
   focusCanvasBlock,
   removeCanvasBlockById,
   type CanvasEditor,
