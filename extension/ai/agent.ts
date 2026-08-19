@@ -1,7 +1,6 @@
 import { callLlm, type ChatMessage, type LlmConfig } from './llmClient'
 import { runAgentLoop } from './agentLoop'
 import { normalizeDocumentBlocks } from './normalizeDocumentBlocks'
-import type { EmbeddingConfig } from './embeddings'
 import {
   extractDiagramCodes,
   normalizeMermaidSource,
@@ -12,10 +11,9 @@ import {
   loadConfig,
   loadDocTypes,
   loadForm,
-  resolveEmbeddingSettings,
   saveForm,
 } from '../formStateManager'
-import { CodeIndexer } from '../codeIndexer'
+import type { ChatHistoryTurn } from '../protocol'
 
 // Document canvases — not home/profile orchestrator modes.
 function isCanvasPhase(phase: string): boolean {
@@ -84,42 +82,12 @@ export interface ProcessChatArgs {
   apiKey: string
   provider?: string | null
   model?: string | null
+  /** Prior user/assistant turns for short-term memory (excludes the current message). */
+  history?: ChatHistoryTurn[]
   /** Interim UX status (e.g. "Updating code index…"). Pass null to clear. */
   onStatus?: (text: string | null) => void
   /** Fired when generate_pipeline updates doc-types.json. */
   onDocTypesChanged?: (data: unknown[], mode: 'merge' | 'replace') => void
-}
-
-/**
- * Lazy incremental embedding sync before chat.
- * Re-embeds only changed files (or builds the index on first use).
- * Returns false if Ollama / embeddings are unavailable (grep/read_file still work).
- */
-async function ensureFreshEmbeddings(
-  workspaceRoot: string,
-  embedCfg: EmbeddingConfig,
-  onStatus?: (text: string | null) => void,
-): Promise<boolean> {
-  try {
-    onStatus?.('Checking for code changes…')
-    const indexer = new CodeIndexer(workspaceRoot)
-    const stats = await indexer.syncEmbeddings(embedCfg, (p) => {
-      if (p.phase === 'embedding') {
-        onStatus?.(`Updating code index… ${p.percent}%`)
-      } else if (p.phase === 'embedding-scan') {
-        onStatus?.('Checking for code changes…')
-      }
-    })
-    if (stats.changed > 0) {
-      onStatus?.(
-        `Indexed ${stats.changed} changed file${stats.changed === 1 ? '' : 's'}`,
-      )
-    }
-    return true
-  } catch {
-    onStatus?.('Semantic index unavailable — using file search tools…')
-    return false
-  }
 }
 
 export async function processChat(args: ProcessChatArgs): Promise<ChatResult> {
@@ -130,6 +98,7 @@ export async function processChat(args: ProcessChatArgs): Promise<ChatResult> {
     apiKey,
     provider,
     model,
+    history,
     onStatus,
     onDocTypesChanged,
   } = args
@@ -143,11 +112,6 @@ export async function processChat(args: ProcessChatArgs): Promise<ChatResult> {
     apiKey,
   }
 
-  const embedCfg: EmbeddingConfig = resolveEmbeddingSettings(config)
-
-  // Option B: keep the semantic index fresh when possible (Ollama).
-  // Tools (grep/read_file/list_dir) always work even if embeddings fail.
-  await ensureFreshEmbeddings(workspaceRoot, embedCfg, onStatus)
   onStatus?.('Thinking…')
 
   let replyText: string
@@ -174,8 +138,8 @@ export async function processChat(args: ProcessChatArgs): Promise<ChatResult> {
     fieldGuide,
     workspaceRoot,
     llmConfig,
-    embedCfg,
     currentDocJson,
+    history,
     onDocTypesChanged,
   })
   replyText = result.message

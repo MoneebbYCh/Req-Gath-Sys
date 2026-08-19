@@ -1,14 +1,16 @@
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import * as fs from 'fs'
 import * as path from 'path'
+import fg from 'fast-glob'
 import { LEGACY_STATE_DIR, STATE_DIR } from '../brand'
 import { loadDocTypes, saveDocTypes, saveForm } from '../formStateManager'
-import { retrieve } from './retrieval'
-import type { EmbeddingConfig } from './embeddings'
 import { normalizeMermaidSource, parseMermaid } from './mermaidValidate'
+
+const execFileAsync = promisify(execFile)
 
 export interface ToolContext {
   workspaceRoot: string
-  embedCfg: EmbeddingConfig
   /** Called after generate_pipeline writes doc-types.json so the webview can refresh. */
   onDocTypesChanged?: (data: unknown[], mode: 'merge' | 'replace') => void
 }
@@ -16,15 +18,20 @@ export interface ToolContext {
 const IGNORE_DIRS = new Set([
   'node_modules', 'dist', 'out', '.git', STATE_DIR, LEGACY_STATE_DIR, '.vscode',
 ])
-const SUPPORTED =
-  /\.(ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|rb|php|swift|kt|kts|scala|sh|bash|zsh|ps1|md|mdx|json|yaml|yml|toml|css|scss|html|htm|sql)$/i
 
-const MAX_READ_LINES = 200
-const MAX_GREP_MATCHES = 40
-const MAX_GREP_FILES = 4000
-const MAX_OBS_CHARS = 6000
+const MAX_READ_LINES = 2000
+const MAX_GREP_MATCHES = 50
+const MAX_GLOB_RESULTS = 50
+const MAX_OBS_CHARS = 12_000
 const MAX_MERMAID_CHARS = 8000
 const MAX_PIPELINE_DOCS = 12
+const MAX_LIST_DIR_CHILDREN = 40
+const GREP_CONTEXT_LINES = 1
+
+/** Folder name patterns worth calling out during orientation. */
+const RELEVANT_DIR_RE =
+  /^(src|lib|libs|api|app|apps|server|servers|backend|frontend|extension|packages|services|service|controllers|routes|core|internal|agent|agents|ai|auth|db|data|models|handlers|middleware|utils|helpers|components|pages|views|hooks)$/i
+
 const PIPELINE_ICONS = new Set([
   'article',
   'draft',
@@ -46,6 +53,51 @@ const PIPELINE_ICONS = new Set([
   'bar_chart',
 ])
 
+const GLOB_PRESETS: Record<string, string[]> = {
+  config: [
+    '**/package.json',
+    '**/tsconfig*.json',
+    '**/jsconfig*.json',
+    '**/.env*',
+    '**/vite.config.*',
+    '**/webpack.config.*',
+    '**/next.config.*',
+    '**/nuxt.config.*',
+    '**/pyproject.toml',
+    '**/Cargo.toml',
+    '**/go.mod',
+    '**/requirements*.txt',
+    '**/Dockerfile*',
+    '**/docker-compose*.{yml,yaml}',
+    '**/.github/workflows/*.{yml,yaml}',
+  ],
+  'entry points': [
+    '**/index.{ts,tsx,js,jsx,mjs,cjs}',
+    '**/main.{ts,tsx,js,jsx,mjs,cjs,py,go}',
+    '**/app.{ts,tsx,js,jsx}',
+    '**/server.{ts,tsx,js,jsx}',
+    '**/extension.{ts,js}',
+    '**/__init__.py',
+    '**/cmd/**/main.go',
+  ],
+  entry_points: [
+    '**/index.{ts,tsx,js,jsx,mjs,cjs}',
+    '**/main.{ts,tsx,js,jsx,mjs,cjs,py,go}',
+    '**/app.{ts,tsx,js,jsx}',
+    '**/server.{ts,tsx,js,jsx}',
+    '**/extension.{ts,js}',
+    '**/__init__.py',
+    '**/cmd/**/main.go',
+  ],
+  tests: [
+    '**/*.{test,spec}.{ts,tsx,js,jsx}',
+    '**/__tests__/**',
+    '**/tests/**/*.{ts,tsx,js,jsx,py}',
+    '**/test_*.py',
+    '**/*_test.go',
+  ],
+}
+
 interface PipelineDocSpec {
   name: string
   icon: string
@@ -61,9 +113,9 @@ interface StoredCustomDocType {
 }
 
 export const TOOL_NAMES = [
-  'semantic_search',
-  'read_file',
+  'glob',
   'grep',
+  'read_file',
   'list_dir',
   'validate_mermaid',
   'list_pipeline',
@@ -74,10 +126,39 @@ export const TOOL_NAMES = [
 /** Human-readable tool catalog for the agent system prompt. */
 export const TOOL_CATALOG = `AVAILABLE TOOLS (call one per step):
 Codebase tools (user's open workspace folder):
-- list_dir { "path": string }  -> explore folders (start with "." or "src")
-- grep { "pattern": string, "glob"?: string }  -> regex matches across the codebase
-- read_file { "path": string, "start"?: number, "end"?: number }  -> file contents (max ${MAX_READ_LINES} lines)
-- semantic_search { "query": string, "k"?: number }  -> ranked code by meaning (may be empty if embeddings are offline; then use grep/list_dir/read_file instead)
+- list_dir { "path"?: string, "depth"?: 1|2 }  -> list directory tree (default depth 2 with per-subfolder file counts; flags ★relevant folders like src/lib/api/agent*). Start with "." .
+- glob { "pattern"?: string, "preset"?: "config"|"entry points"|"tests", "max_results"?: number }  -> find files by name/path. Prefer preset for common intents; use pattern for custom globs (e.g. "src/**/*.ts"). Does NOT search file contents. Reports how many hits .gitignore hid.
+- grep { "pattern"?: string, "patterns"?: string[], "path"?: string, "case_sensitive"?: boolean }  -> regex search in file contents. Default is case-insensitive (set case_sensitive:true to tighten). Pass patterns:[...] to search several phrasings in one call (results grouped). Returns ±1 line of context. Cap ${MAX_GREP_MATCHES}/pattern — when hit, observation says so and suggests narrowing.
+- read_file { "path": string, "line_start"?: number, "line_end"?: number }  -> read a known file (optional line range; max ${MAX_READ_LINES} lines). Truncation is explicit ("truncated at line X of N").
+
+DEFAULT SEARCH ORDER (follow unless you already know the path):
+1. list_dir — orient on folder structure
+2. glob — candidate files by name/path/preset
+3. grep — candidate lines by content (use patterns:[...] for synonyms in one call)
+4. read_file — confirm with full context before claiming facts
+
+ZERO HITS ≠ ABSENT:
+- If grep/glob returns nothing, retry with a different phrasing (synonym, abbreviation, alternate casing, SDK import name) before concluding something is missing.
+- Require at least 2 different query attempts before stating a feature/file/symbol is not in the codebase.
+
+CITATIONS:
+- Every factual claim in a draft or inventory answer must trace to a specific read_file observation (cite path:line). Do not assert from grep snippets alone.
+
+When exploring:
+- Prefer narrow searches over broad ones. If a search hits the match cap, narrow by directory or file type rather than reading everything.
+- For a specific named symbol/file/function: stop once you have enough evidence (with at least one read_file).
+- For category / inventory / "what does X do" / "where is AI" / "is that everything" questions: do NOT stop after 2–3 good concept matches. Finding solid examples ≠ finding everything.
+
+SEARCH DISCIPLINE (category & enumeration questions):
+- Concept words ("agent", "chatbot", "AI") are guesses and miss features that use different vocabulary.
+- Always do a second, broader pass grepping for mechanical SDK/library anchors every LLM-touching file must contain, for example:
+  openai | OpenAI | chat.completions | embeddings.create | text-embedding
+  mistral | @mistralai | anthropic | @anthropic | langchain
+  chromadb | ChromaClient | vectorStore
+  Prefer one grep with patterns:[...] covering those anchors.
+  Also glob for *Service* / *Controller* / *Routes* names that look AI-related if the first pass is thin.
+- Before finalizing an enumeration-style chat answer, explicitly list the search patterns you tried (so gaps are visible). Never silently assume coverage.
+- If the user asked for chat-only (no document), put the full inventory in "message" and set document:null.
 
 Diagram tool (use when the document needs a Mermaid diagram):
 - validate_mermaid { "code": string, "title"?: string }  -> parse-check your Mermaid; on success returns a ready diagram block JSON to put in "document". Reason about the codebase (or chat) first, then draft Mermaid yourself and validate here — do NOT invent from a fixed template.
@@ -103,52 +184,398 @@ function safeResolve(workspaceRoot: string, rel: string): string | null {
   return abs
 }
 
-function globToRegExp(glob: string): RegExp {
-  const escaped = glob
-    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
-    .replace(/\*\*/g, '\u0000')
-    .replace(/\*/g, '[^/]*')
-    .replace(/\u0000/g, '.*')
-    .replace(/\?/g, '.')
-  return new RegExp(escaped)
-}
-
-function walkFiles(workspaceRoot: string, onFile: (abs: string, rel: string) => boolean): void {
-  const walk = (dir: string): boolean => {
-    let entries: fs.Dirent[]
-    try {
-      entries = fs.readdirSync(dir, { withFileTypes: true })
-    } catch {
-      return true
-    }
-    for (const entry of entries) {
-      if (IGNORE_DIRS.has(entry.name)) continue
-      const abs = path.join(dir, entry.name)
-      if (entry.isDirectory()) {
-        if (!walk(abs)) return false
-      } else if (entry.isFile() && SUPPORTED.test(entry.name)) {
-        const rel = path.relative(workspaceRoot, abs)
-        if (!onFile(abs, rel)) return false
-      }
-    }
-    return true
+function toWorkspaceRel(workspaceRoot: string, absOrRel: string): string {
+  if (path.isAbsolute(absOrRel)) {
+    return path.relative(workspaceRoot, absOrRel) || '.'
   }
-  walk(workspaceRoot)
+  return absOrRel.replace(/\\/g, '/')
 }
 
-async function semanticSearch(ctx: ToolContext, args: Record<string, unknown>): Promise<string> {
-  const query = String(args.query ?? '').trim()
-  if (!query) return 'error: "query" is required'
-  const k = clampInt(args.k, 8, 1, 15)
-  const hits = await retrieve(ctx.workspaceRoot, query, k, ctx.embedCfg)
-  if (hits.length === 0) return 'No results (index empty or embeddings unavailable).'
-  return hits
-    .map(
-      (h) =>
-        `- ${h.file}:${h.startLine}-${h.endLine}` +
-        `${h.symbol && h.symbol !== 'block' ? ' ' + h.symbol : ''} (score ${h.score.toFixed(3)})`,
+function normalizeRel(rel: string): string {
+  return rel.replace(/\\/g, '/') || '.'
+}
+
+function isRelevantDirName(name: string): boolean {
+  if (RELEVANT_DIR_RE.test(name)) return true
+  return /^agent/i.test(name) || /^api/i.test(name)
+}
+
+/** Prefer non-test, non-vendor, shallower paths first. */
+function grepRelevanceScore(file: string): number {
+  const lower = file.toLowerCase().replace(/\\/g, '/')
+  let score = 0
+  if (
+    /\.(test|spec)\.[^.]+$/.test(lower) ||
+    /\/(__tests__|tests?|specs?)\//.test(lower) ||
+    /\/test_/.test(lower)
+  ) {
+    score += 100
+  }
+  if (
+    /(^|\/)(node_modules|vendor|third[-_]?party|dist|out|build|coverage)(\/|$)/.test(lower)
+  ) {
+    score += 200
+  }
+  score += lower.split('/').filter(Boolean).length
+  return score
+}
+
+function sortGrepMatches<T extends { file: string; line: number }>(matches: T[]): T[] {
+  return [...matches].sort((a, b) => {
+    const sa = grepRelevanceScore(a.file)
+    const sb = grepRelevanceScore(b.file)
+    if (sa !== sb) return sa - sb
+    if (a.file !== b.file) return a.file.localeCompare(b.file)
+    return a.line - b.line
+  })
+}
+
+let cachedRgPath: string | null | undefined
+
+async function resolveRgPath(): Promise<string | null> {
+  if (cachedRgPath !== undefined) return cachedRgPath
+  try {
+    const mod = await import('@vscode/ripgrep')
+    if (mod.rgPath && fs.existsSync(mod.rgPath)) {
+      cachedRgPath = mod.rgPath
+      return cachedRgPath
+    }
+  } catch {
+    /* bundled binary unavailable */
+  }
+  cachedRgPath = 'rg'
+  return cachedRgPath
+}
+
+interface RgMatch {
+  file: string
+  line: number
+  text: string
+  before: { line: number; text: string }[]
+  after: { line: number; text: string }[]
+}
+
+/**
+ * Parse ripgrep --json -C N into ranked matches with before/after snippets.
+ */
+function parseRipgrepJson(stdout: string, workspaceRoot: string, maxMatches: number): RgMatch[] {
+  type LineEvt = { file: string; line: number; text: string; kind: 'match' | 'context' }
+  const events: LineEvt[] = []
+
+  for (const line of stdout.split('\n')) {
+    if (!line.trim()) continue
+    try {
+      const evt = JSON.parse(line) as {
+        type?: string
+        data?: {
+          path?: { text?: string }
+          line_number?: number
+          lines?: { text?: string }
+        }
+      }
+      if ((evt.type !== 'match' && evt.type !== 'context') || !evt.data) continue
+      const fileAbs = evt.data.path?.text ?? ''
+      const lineNo = evt.data.line_number ?? 0
+      const text = (evt.data.lines?.text ?? '').replace(/\n$/, '')
+      if (!fileAbs || !lineNo) continue
+      events.push({
+        file: toWorkspaceRel(workspaceRoot, fileAbs),
+        line: lineNo,
+        text: text.trimEnd().slice(0, 200),
+        kind: evt.type === 'match' ? 'match' : 'context',
+      })
+    } catch {
+      /* skip malformed */
+    }
+  }
+
+  const matches: RgMatch[] = []
+  for (let i = 0; i < events.length; i++) {
+    const e = events[i]
+    if (e.kind !== 'match') continue
+    if (matches.length >= maxMatches) break
+
+    const before: { line: number; text: string }[] = []
+    for (let j = i - 1; j >= 0 && before.length < GREP_CONTEXT_LINES; j--) {
+      const prev = events[j]
+      if (prev.file !== e.file) break
+      if (prev.line >= e.line) continue
+      if (e.line - prev.line > GREP_CONTEXT_LINES + 1) break
+      before.unshift({ line: prev.line, text: prev.text })
+    }
+
+    const after: { line: number; text: string }[] = []
+    for (let j = i + 1; j < events.length && after.length < GREP_CONTEXT_LINES; j++) {
+      const next = events[j]
+      if (next.file !== e.file) break
+      if (next.line <= e.line) continue
+      if (next.line - e.line > GREP_CONTEXT_LINES + 1) break
+      after.push({ line: next.line, text: next.text })
+    }
+
+    matches.push({ file: e.file, line: e.line, text: e.text, before, after })
+  }
+
+  return sortGrepMatches(matches)
+}
+
+function formatGrepMatch(m: RgMatch): string {
+  const lines: string[] = []
+  for (const b of m.before) lines.push(`${m.file}:${b.line}:  ${b.text}`)
+  lines.push(`${m.file}:${m.line}:> ${m.text}`)
+  for (const a of m.after) lines.push(`${m.file}:${a.line}:  ${a.text}`)
+  return lines.join('\n')
+}
+
+function loadGitignoreIgnorePatterns(workspaceRoot: string): string[] {
+  const giPath = path.join(workspaceRoot, '.gitignore')
+  if (!fs.existsSync(giPath)) return []
+  let text: string
+  try {
+    text = fs.readFileSync(giPath, 'utf-8')
+  } catch {
+    return []
+  }
+  const patterns: string[] = []
+  for (const raw of text.split('\n')) {
+    const line = raw.trim()
+    if (!line || line.startsWith('#') || line.startsWith('!')) continue
+    let p = line.replace(/\\/g, '/')
+    if (p.endsWith('/')) p = p.slice(0, -1)
+    if (!p) continue
+    if (p.startsWith('/')) {
+      const rel = p.slice(1)
+      patterns.push(rel, `${rel}/**`)
+    } else if (p.includes('/')) {
+      patterns.push(p, `${p}/**`)
+    } else {
+      patterns.push(`**/${p}`, `**/${p}/**`)
+    }
+  }
+  return patterns
+}
+
+function resolveGlobPatterns(args: Record<string, unknown>): { patterns: string[]; label: string } | string {
+  const presetRaw = typeof args.preset === 'string' ? args.preset.trim().toLowerCase() : ''
+  const pattern = typeof args.pattern === 'string' ? args.pattern.trim() : ''
+
+  if (presetRaw) {
+    const key =
+      presetRaw === 'entry points' || presetRaw === 'entrypoints' || presetRaw === 'entry-points'
+        ? 'entry_points'
+        : presetRaw === 'configs'
+          ? 'config'
+          : presetRaw === 'test'
+            ? 'tests'
+            : presetRaw
+    const preset = GLOB_PRESETS[key]
+    if (!preset) {
+      return `error: unknown preset "${args.preset}". Use "config", "entry points", or "tests".`
+    }
+    return { patterns: preset, label: `preset:${key === 'entry_points' ? 'entry points' : key}` }
+  }
+
+  if (!pattern) {
+    return 'error: provide "pattern" or "preset" ("config" | "entry points" | "tests")'
+  }
+  return { patterns: [pattern], label: `pattern:${pattern}` }
+}
+
+async function globTool(ctx: ToolContext, args: Record<string, unknown>): Promise<string> {
+  const resolved = resolveGlobPatterns(args)
+  if (typeof resolved === 'string') return resolved
+  const maxResults = clampInt(args.max_results, MAX_GLOB_RESULTS, 1, 200)
+  const hardIgnore = [...IGNORE_DIRS].map((d) => `**/${d}/**`)
+  const gitignorePatterns = loadGitignoreIgnorePatterns(ctx.workspaceRoot)
+
+  const runFg = (extraIgnore: string[]) =>
+    fg(resolved.patterns, {
+      cwd: ctx.workspaceRoot,
+      dot: false,
+      onlyFiles: true,
+      absolute: false,
+      suppressErrors: true,
+      unique: true,
+      ignore: [...hardIgnore, ...extraIgnore],
+    })
+
+  const [withGitignore, withoutGitignore] = await Promise.all([
+    runFg(gitignorePatterns),
+    runFg([]),
+  ])
+
+  const excludedByGitignore = Math.max(0, withoutGitignore.length - withGitignore.length)
+  const files = withGitignore
+  const truncated = files.length > maxResults
+  const slice = files.slice(0, maxResults)
+
+  if (slice.length === 0) {
+    const bits = [`No files matched (${resolved.label}).`]
+    if (excludedByGitignore > 0) {
+      bits.push(
+        `${excludedByGitignore} file(s) matched the pattern but were excluded by .gitignore — try a more specific path or check ignored folders.`,
+      )
+    }
+    bits.push('Zero hits ≠ absent: retry with another preset/pattern before concluding nothing exists.')
+    return bits.join('\n')
+  }
+
+  const lines = [
+    `${slice.length} file(s) (${resolved.label})${
+      truncated ? ` — truncated; ${files.length} total matched, showing first ${maxResults}. Narrow the pattern.` : ''
+    }${excludedByGitignore > 0 ? ` — ${excludedByGitignore} file(s) excluded by .gitignore.` : ''}:`,
+    ...slice.map((f) => `- ${f}`),
+  ]
+  return lines.join('\n')
+}
+
+function collectGrepPatterns(args: Record<string, unknown>): string[] | string {
+  const patterns: string[] = []
+  if (Array.isArray(args.patterns)) {
+    for (const p of args.patterns) {
+      if (typeof p === 'string' && p.trim()) patterns.push(p.trim())
+    }
+  }
+  const single = typeof args.pattern === 'string' ? args.pattern.trim() : ''
+  if (single) patterns.push(single)
+  // Deduplicate while preserving order
+  const seen = new Set<string>()
+  const unique = patterns.filter((p) => {
+    if (seen.has(p)) return false
+    seen.add(p)
+    return true
+  })
+  if (unique.length === 0) return 'error: "pattern" or "patterns" is required'
+  if (unique.length > 8) return 'error: at most 8 patterns per grep call'
+  return unique
+}
+
+function wantsCaseInsensitive(args: Record<string, unknown>): boolean {
+  // Default: case-insensitive. Opt into case-sensitive explicitly.
+  if (args.case_sensitive === true || args.case_sensitive === 'true' || args.caseSensitive === true) {
+    return false
+  }
+  if (args.case_insensitive === false || args.case_insensitive === 'false' || args.caseInsensitive === false) {
+    return false
+  }
+  return true
+}
+
+async function runSingleGrep(
+  ctx: ToolContext,
+  pattern: string,
+  searchAbs: string,
+  caseInsensitive: boolean,
+  maxMatches: number,
+): Promise<{ matches: RgMatch[]; error?: string; hitCap: boolean }> {
+  const rg = await resolveRgPath()
+  if (!rg) return { matches: [], error: 'error: ripgrep is unavailable', hitCap: false }
+
+  const rgArgs = [
+    '--json',
+    '-C',
+    String(GREP_CONTEXT_LINES),
+    '--max-count',
+    String(maxMatches),
+    '--glob',
+    '!**/node_modules/**',
+    '--glob',
+    '!**/dist/**',
+    '--glob',
+    '!**/out/**',
+    '--glob',
+    `!**/${STATE_DIR}/**`,
+    '--glob',
+    `!**/${LEGACY_STATE_DIR}/**`,
+  ]
+  if (caseInsensitive) rgArgs.push('-i')
+  rgArgs.push('--', pattern, searchAbs)
+
+  try {
+    const { stdout } = await execFileAsync(rg, rgArgs, {
+      maxBuffer: 2 * 1024 * 1024,
+      cwd: ctx.workspaceRoot,
+    })
+    const matches = parseRipgrepJson(stdout, ctx.workspaceRoot, maxMatches)
+    return { matches, hitCap: matches.length >= maxMatches }
+  } catch (err: unknown) {
+    const e = err as { code?: number | string; stdout?: string; message?: string }
+    if (e.code === 1) return { matches: [], hitCap: false }
+    if (e.stdout) {
+      const matches = parseRipgrepJson(e.stdout, ctx.workspaceRoot, maxMatches)
+      return { matches, hitCap: matches.length >= maxMatches }
+    }
+    if (e.code === 'ENOENT') return { matches: [], error: 'error: ripgrep binary not found', hitCap: false }
+    return { matches: [], error: `error: grep failed: ${e.message ?? String(err)}`, hitCap: false }
+  }
+}
+
+async function grepTool(ctx: ToolContext, args: Record<string, unknown>): Promise<string> {
+  const patterns = collectGrepPatterns(args)
+  if (typeof patterns === 'string') return patterns
+
+  const searchPathRaw = String(args.path ?? args.glob ?? '.').trim() || '.'
+  const searchAbs = safeResolve(ctx.workspaceRoot, searchPathRaw)
+  if (!searchAbs) return 'error: path is outside the workspace'
+
+  const caseInsensitive = wantsCaseInsensitive(args)
+  const sections: string[] = []
+  let anyHits = false
+  let anyCap = false
+
+  for (const pattern of patterns) {
+    const { matches, error, hitCap } = await runSingleGrep(
+      ctx,
+      pattern,
+      searchAbs,
+      caseInsensitive,
+      MAX_GREP_MATCHES,
     )
-    .join('\n')
+    if (error) return error
+
+    if (matches.length === 0) {
+      sections.push(
+        [
+          `### pattern: ${JSON.stringify(pattern)} — No matches.`,
+          'Zero hits ≠ absent: retry with a synonym, abbreviation, or alternate spelling before concluding this is missing.',
+        ].join('\n'),
+      )
+      continue
+    }
+
+    anyHits = true
+    if (hitCap) anyCap = true
+    const body = matches.map(formatGrepMatch).join('\n---\n')
+    const header = [
+      `### pattern: ${JSON.stringify(pattern)} — ${matches.length} match(es)` +
+        (caseInsensitive ? ' (case-insensitive)' : ' (case-sensitive)') +
+        (hitCap
+          ? `\n⚠️ Hit the ${MAX_GREP_MATCHES}-match cap — results are incomplete. Narrow by path (subdirectory) or file type (e.g. path:"src" or a tighter regex), then grep again.`
+          : ''),
+    ]
+    sections.push([...header, body].join('\n'))
+  }
+
+  if (!anyHits) {
+    return [
+      `No matches for ${patterns.length} pattern(s) under ${normalizeRel(searchPathRaw)}` +
+        (caseInsensitive ? ' (case-insensitive).' : '.'),
+      `Tried: ${patterns.map((p) => JSON.stringify(p)).join(', ')}`,
+      'Zero hits ≠ absent: you MUST try at least one more differently-phrased grep (or glob) before claiming this is not in the codebase.',
+    ].join('\n')
+  }
+
+  const footer: string[] = []
+  if (anyCap) {
+    footer.push(
+      `Note: at least one pattern hit the ${MAX_GREP_MATCHES}-match cap. Do not assume you saw everything — narrow scope and search again if completeness matters.`,
+    )
+  }
+  if (patterns.length > 1) {
+    footer.push(`Searched ${patterns.length} patterns in one call; results grouped above.`)
+  }
+
+  return footer.length ? `${sections.join('\n\n')}\n\n${footer.join('\n')}` : sections.join('\n\n')
 }
 
 function readFileTool(ctx: ToolContext, args: Record<string, unknown>): string {
@@ -163,65 +590,149 @@ function readFileTool(ctx: ToolContext, args: Record<string, unknown>): string {
     return `error: cannot read ${rel}`
   }
   const lines = content.split('\n')
-  const start = clampInt(args.start, 1, 1, Math.max(1, lines.length))
-  let end = clampInt(args.end, Math.min(lines.length, start + MAX_READ_LINES - 1), start, lines.length)
+  const hasRange =
+    args.line_start != null ||
+    args.line_end != null ||
+    args.start != null ||
+    args.end != null
+
+  if (!hasRange) {
+    if (lines.length > MAX_READ_LINES) {
+      const numbered = lines
+        .slice(0, MAX_READ_LINES)
+        .map((l, i) => `${i + 1}\t${l}`)
+        .join('\n')
+      return `${rel}:1-${MAX_READ_LINES}\n${numbered}\n\n[truncated at line ${MAX_READ_LINES} of ${lines.length} — re-read with line_start/line_end for the rest; do not assume completeness]`
+    }
+    const numbered = lines.map((l, i) => `${i + 1}\t${l}`).join('\n')
+    return `${rel}:1-${lines.length}\n${numbered}`
+  }
+
+  const start = clampInt(
+    args.line_start ?? args.start,
+    1,
+    1,
+    Math.max(1, lines.length),
+  )
+  let end = clampInt(
+    args.line_end ?? args.end,
+    Math.min(lines.length, start + MAX_READ_LINES - 1),
+    start,
+    lines.length,
+  )
   if (end - start + 1 > MAX_READ_LINES) end = start + MAX_READ_LINES - 1
   const numbered = lines.slice(start - 1, end).map((l, i) => `${start + i}\t${l}`).join('\n')
-  return `${rel}:${start}-${end}\n${numbered}`
+  const truncatedRange = end < lines.length && end - start + 1 >= MAX_READ_LINES
+  const suffix = truncatedRange
+    ? `\n\n[truncated at line ${end} of ${lines.length} — request another range for the rest]`
+    : end < lines.length
+      ? `\n\n[${end - start + 1} lines shown; file continues to line ${lines.length}]`
+      : ''
+  return `${rel}:${start}-${end}\n${numbered}${suffix}`
 }
 
-function grepTool(ctx: ToolContext, args: Record<string, unknown>): string {
-  const pattern = String(args.pattern ?? '')
-  if (!pattern) return 'error: "pattern" is required'
-  let re: RegExp
+function countDirFiles(abs: string): { files: number; dirs: number } {
+  let files = 0
+  let dirs = 0
+  let entries: fs.Dirent[]
   try {
-    re = new RegExp(pattern, 'i')
+    entries = fs.readdirSync(abs, { withFileTypes: true })
   } catch {
-    return 'error: invalid regular expression'
+    return { files: 0, dirs: 0 }
   }
-  const globRe = args.glob ? globToRegExp(String(args.glob)) : null
-  const matches: string[] = []
-  let scanned = 0
-
-  walkFiles(ctx.workspaceRoot, (abs, rel) => {
-    if (scanned >= MAX_GREP_FILES) return false
-    scanned++
-    if (globRe && !globRe.test(rel)) return true
-    let text: string
-    try {
-      text = fs.readFileSync(abs, 'utf-8')
-    } catch {
-      return true
-    }
-    const lines = text.split('\n')
-    for (let i = 0; i < lines.length; i++) {
-      if (re.test(lines[i])) {
-        matches.push(`${rel}:${i + 1}: ${lines[i].trim().slice(0, 200)}`)
-        if (matches.length >= MAX_GREP_MATCHES) return false
-      }
-    }
-    return true
-  })
-
-  if (matches.length === 0) return 'No matches.'
-  return matches.join('\n')
+  for (const e of entries) {
+    if (IGNORE_DIRS.has(e.name) || e.name.startsWith('.')) continue
+    if (e.isDirectory()) dirs += 1
+    else files += 1
+  }
+  return { files, dirs }
 }
 
 function listDirTool(ctx: ToolContext, args: Record<string, unknown>): string {
   const rel = String(args.path ?? '.')
   const abs = safeResolve(ctx.workspaceRoot, rel)
   if (!abs) return 'error: path is outside the workspace'
+
+  const depth = clampInt(args.depth, 2, 1, 2)
+
   let entries: fs.Dirent[]
   try {
     entries = fs.readdirSync(abs, { withFileTypes: true })
   } catch {
     return `error: cannot list ${rel}`
   }
-  return entries
-    .filter((e) => !IGNORE_DIRS.has(e.name))
-    .map((e) => (e.isDirectory() ? `${e.name}/` : e.name))
-    .sort()
-    .join('\n')
+
+  const rows = entries
+    .filter((e) => !IGNORE_DIRS.has(e.name) && !e.name.startsWith('.'))
+    .map((e) => ({ name: e.name, type: e.isDirectory() ? ('dir' as const) : ('file' as const) }))
+    .sort((a, b) => {
+      if (a.type !== b.type) return a.type === 'dir' ? -1 : 1
+      return a.name.localeCompare(b.name)
+    })
+
+  if (rows.length === 0) return '(empty)'
+
+  const lines: string[] = [`${normalizeRel(rel)}/ (depth ${depth}):`]
+  let childBudget = MAX_LIST_DIR_CHILDREN
+
+  for (const r of rows) {
+    if (r.type === 'file') {
+      lines.push(`file  ${r.name}`)
+      continue
+    }
+
+    const childAbs = path.join(abs, r.name)
+    const counts = countDirFiles(childAbs)
+    const relevant = isRelevantDirName(r.name)
+    const flag = relevant ? ' ★relevant' : ''
+    lines.push(
+      `dir   ${r.name}/${flag}  (${counts.files} files, ${counts.dirs} subdirs)`,
+    )
+
+    if (depth < 2) continue
+
+    let children: fs.Dirent[]
+    try {
+      children = fs.readdirSync(childAbs, { withFileTypes: true })
+    } catch {
+      continue
+    }
+
+    const childRows = children
+      .filter((e) => !IGNORE_DIRS.has(e.name) && !e.name.startsWith('.'))
+      .map((e) => ({ name: e.name, type: e.isDirectory() ? ('dir' as const) : ('file' as const) }))
+      .sort((a, b) => {
+        if (a.type !== b.type) return a.type === 'dir' ? -1 : 1
+        return a.name.localeCompare(b.name)
+      })
+
+    const show = childRows.slice(0, Math.min(childRows.length, Math.max(0, childBudget)))
+    childBudget -= show.length
+    for (const c of show) {
+      if (c.type === 'dir') {
+        const nested = countDirFiles(path.join(childAbs, c.name))
+        const nestedRelevant = isRelevantDirName(c.name)
+        lines.push(
+          `        dir   ${c.name}/${nestedRelevant ? ' ★relevant' : ''}  (${nested.files} files)`,
+        )
+      } else {
+        lines.push(`        file  ${c.name}`)
+      }
+    }
+    if (childRows.length > show.length) {
+      lines.push(`        … +${childRows.length - show.length} more in ${r.name}/`)
+    }
+    if (childBudget <= 0 && rows.indexOf(r) < rows.length - 1) {
+      lines.push('… (child listing budget reached — list_dir a specific subfolder for more)')
+      break
+    }
+  }
+
+  if (rows.some((r) => r.type === 'dir' && isRelevantDirName(r.name))) {
+    lines.push('Tip: ★relevant folders are strong next targets for glob/grep.')
+  }
+
+  return lines.join('\n')
 }
 
 /**
@@ -472,14 +983,14 @@ export async function runTool(
   let out: string
   try {
     switch (name) {
-      case 'semantic_search':
-        out = await semanticSearch(ctx, args)
+      case 'glob':
+        out = await globTool(ctx, args)
         break
       case 'read_file':
         out = readFileTool(ctx, args)
         break
       case 'grep':
-        out = grepTool(ctx, args)
+        out = await grepTool(ctx, args)
         break
       case 'list_dir':
         out = listDirTool(ctx, args)
