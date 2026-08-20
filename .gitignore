@@ -41,9 +41,12 @@ coverage
 *.sln
 *.sw?
 
-# Extension workspace state
+# Extension workspace state (eval reports, sandbox, tool-output)
 .charter-ai
 .req-gath-sys
+
+# Local reference trees — do not publish
+opencode/
 
 # Madar / graphify leftovers (no longer used)
 graphify-out/

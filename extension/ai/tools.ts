@@ -1,13 +1,15 @@
-import { execFile } from 'node:child_process'
-import { promisify } from 'node:util'
 import * as fs from 'fs'
 import * as path from 'path'
-import fg from 'fast-glob'
 import { LEGACY_STATE_DIR, STATE_DIR } from '../brand'
 import { loadDocTypes, saveDocTypes, saveForm } from '../formStateManager'
 import { normalizeMermaidSource, parseMermaid } from './mermaidValidate'
-
-const execFileAsync = promisify(execFile)
+import { readFileTool as readFilePageTool, MAX_READ_LINES } from './readTool'
+import {
+  formatGrepMatch,
+  globFiles,
+  grepSearch,
+} from './ripgrepAdapter'
+import { boundToolOutput } from './toolOutputStore'
 
 export interface ToolContext {
   workspaceRoot: string
@@ -41,14 +43,11 @@ const IGNORE_DIRS = new Set([
   'node_modules', 'dist', 'out', '.git', STATE_DIR, LEGACY_STATE_DIR, '.vscode',
 ])
 
-const MAX_READ_LINES = 2000
 const MAX_GREP_MATCHES = 50
 const MAX_GLOB_RESULTS = 50
-const MAX_OBS_CHARS = 12_000
 const MAX_MERMAID_CHARS = 8000
 const MAX_PIPELINE_DOCS = 12
 const MAX_LIST_DIR_CHILDREN = 40
-const GREP_CONTEXT_LINES = 1
 
 /** Folder name patterns worth calling out during orientation. */
 const RELEVANT_DIR_RE =
@@ -146,12 +145,12 @@ export const TOOL_NAMES = [
 ] as const
 
 /** Human-readable tool catalog for the agent system prompt. */
-export const TOOL_CATALOG = `AVAILABLE TOOLS (call one per step):
+export const TOOL_CATALOG = `AVAILABLE TOOLS (native tool calls; you MAY call several in one turn — batch read_file for inventories):
 Codebase tools (user's open workspace folder):
 - list_dir { "path"?: string, "depth"?: 1|2 }  -> list directory tree (default depth 2 with per-subfolder file counts; flags ★relevant folders like src/lib/api/agent*). Start with "." .
 - glob { "pattern"?: string, "preset"?: "config"|"entry points"|"tests", "max_results"?: number }  -> find files by name/path. Prefer preset for common intents; use pattern for custom globs (e.g. "src/**/*.ts"). Does NOT search file contents. Reports how many hits .gitignore hid.
-- grep { "pattern"?: string, "patterns"?: string[], "path"?: string, "case_sensitive"?: boolean }  -> regex search in file contents. Default is case-insensitive (set case_sensitive:true to tighten). Pass patterns:[...] to search several phrasings in one call (results grouped). Returns ±1 line of context. Cap ${MAX_GREP_MATCHES}/pattern — when hit, observation says so and suggests narrowing.
-- read_file { "path": string, "line_start"?: number, "line_end"?: number }  -> read a known file (optional line range; max ${MAX_READ_LINES} lines). Truncation is explicit ("truncated at line X of N").
+- grep { "pattern"?: string, "patterns"?: string[], "path"?: string, "include"?: string, "case_sensitive"?: boolean }  -> regex search in file contents. Default is case-insensitive (set case_sensitive:true to tighten). Pass patterns:[...] to search several phrasings in one call (results grouped). Use include:"*.ts" to filter by file type. Returns ±1 line of context. Cap ${MAX_GREP_MATCHES}/pattern — when hit, observation says so and suggests narrowing.
+- read_file { "path": string, "offset"?: number, "limit"?: number, "line_start"?: number, "line_end"?: number }  -> read a known file (1-based offset/limit; max ${MAX_READ_LINES} lines). Truncation is explicit — if you see "output truncated; full content saved to .charter-ai/tool-output/..." re-read that file or narrow your search.
 
 DEFAULT SEARCH ORDER (follow unless you already know the path):
 1. list_dir — orient on folder structure
@@ -166,10 +165,14 @@ ZERO HITS ≠ ABSENT:
 CITATIONS:
 - Every factual claim in a draft or inventory answer must trace to a specific read_file observation (cite path:line). Do not assert from grep snippets alone.
 
+TRUNCATION:
+- If a tool observation says output was truncated and saved to .charter-ai/tool-output/, use read_file on that path or re-run a narrower grep/glob — do not assume you saw everything.
+
 When exploring:
 - Prefer narrow searches over broad ones. If a search hits the match cap, narrow by directory or file type rather than reading everything.
 - For a specific named symbol/file/function: stop once you have enough evidence (with at least one read_file).
-- For category / inventory / "what does X do" / "where is AI" / "is that everything" questions: do NOT stop after 2–3 good concept matches. Finding solid examples ≠ finding everything.
+- For category / inventory / "what does X do" / "where is AI" / "is that everything" questions they asked: do NOT stop after 2–3 good concept matches. Finding solid examples ≠ finding everything. If they only asked a count or a lookup, answer that — do not expand into a full-repo catalog.
+- For API / route / endpoint maps or totals they asked for: glob *Routes* / *router*, read the mount/index file, then batch-read EVERY mounted module (or grep handlers per file and sum). Nested router.use requires reading that file. Cite the file you opened. Split VERIFIED vs UNREAD if you stop short. Do not count unmounted files.
 
 SEARCH DISCIPLINE (category & enumeration questions):
 - Concept words ("agent", "chatbot", "AI") are guesses and miss features that use different vocabulary.
@@ -179,8 +182,8 @@ SEARCH DISCIPLINE (category & enumeration questions):
   chromadb | ChromaClient | vectorStore
   Prefer one grep with patterns:[...] covering those anchors.
   Also glob for *Service* / *Controller* / *Routes* names that look AI-related if the first pass is thin.
-- Before finalizing an enumeration-style chat answer, explicitly list the search patterns you tried (so gaps are visible). Never silently assume coverage.
-- If the user asked for chat-only (no document), put the full inventory in "message" and set document:null.
+- Before claiming a complete enumeration, note remaining UNREAD files. Never silently assume coverage.
+- If the user asked for chat-only (no document), put the answer in "message" and set document:null.
 
 Diagram tool (use when the document needs a Mermaid diagram):
 - validate_mermaid { "code": string, "title"?: string }  -> parse-check your Mermaid; on success returns a ready diagram block JSON to put in "document". Reason about the codebase (or chat) first, then draft Mermaid yourself and validate here — do NOT invent from a fixed template.
@@ -206,13 +209,6 @@ function safeResolve(workspaceRoot: string, rel: string): string | null {
   return abs
 }
 
-function toWorkspaceRel(workspaceRoot: string, absOrRel: string): string {
-  if (path.isAbsolute(absOrRel)) {
-    return path.relative(workspaceRoot, absOrRel) || '.'
-  }
-  return absOrRel.replace(/\\/g, '/')
-}
-
 function normalizeRel(rel: string): string {
   return rel.replace(/\\/g, '/') || '.'
 }
@@ -220,161 +216,6 @@ function normalizeRel(rel: string): string {
 function isRelevantDirName(name: string): boolean {
   if (RELEVANT_DIR_RE.test(name)) return true
   return /^agent/i.test(name) || /^api/i.test(name)
-}
-
-/** Prefer non-test, non-vendor, shallower paths first. */
-function grepRelevanceScore(file: string): number {
-  const lower = file.toLowerCase().replace(/\\/g, '/')
-  let score = 0
-  if (
-    /\.(test|spec)\.[^.]+$/.test(lower) ||
-    /\/(__tests__|tests?|specs?)\//.test(lower) ||
-    /\/test_/.test(lower)
-  ) {
-    score += 100
-  }
-  if (
-    /(^|\/)(node_modules|vendor|third[-_]?party|dist|out|build|coverage)(\/|$)/.test(lower)
-  ) {
-    score += 200
-  }
-  score += lower.split('/').filter(Boolean).length
-  return score
-}
-
-function sortGrepMatches<T extends { file: string; line: number }>(matches: T[]): T[] {
-  return [...matches].sort((a, b) => {
-    const sa = grepRelevanceScore(a.file)
-    const sb = grepRelevanceScore(b.file)
-    if (sa !== sb) return sa - sb
-    if (a.file !== b.file) return a.file.localeCompare(b.file)
-    return a.line - b.line
-  })
-}
-
-let cachedRgPath: string | null | undefined
-
-async function resolveRgPath(): Promise<string | null> {
-  if (cachedRgPath !== undefined) return cachedRgPath
-  try {
-    const mod = await import('@vscode/ripgrep')
-    if (mod.rgPath && fs.existsSync(mod.rgPath)) {
-      cachedRgPath = mod.rgPath
-      return cachedRgPath
-    }
-  } catch {
-    /* bundled binary unavailable */
-  }
-  cachedRgPath = 'rg'
-  return cachedRgPath
-}
-
-interface RgMatch {
-  file: string
-  line: number
-  text: string
-  before: { line: number; text: string }[]
-  after: { line: number; text: string }[]
-}
-
-/**
- * Parse ripgrep --json -C N into ranked matches with before/after snippets.
- */
-function parseRipgrepJson(stdout: string, workspaceRoot: string, maxMatches: number): RgMatch[] {
-  type LineEvt = { file: string; line: number; text: string; kind: 'match' | 'context' }
-  const events: LineEvt[] = []
-
-  for (const line of stdout.split('\n')) {
-    if (!line.trim()) continue
-    try {
-      const evt = JSON.parse(line) as {
-        type?: string
-        data?: {
-          path?: { text?: string }
-          line_number?: number
-          lines?: { text?: string }
-        }
-      }
-      if ((evt.type !== 'match' && evt.type !== 'context') || !evt.data) continue
-      const fileAbs = evt.data.path?.text ?? ''
-      const lineNo = evt.data.line_number ?? 0
-      const text = (evt.data.lines?.text ?? '').replace(/\n$/, '')
-      if (!fileAbs || !lineNo) continue
-      events.push({
-        file: toWorkspaceRel(workspaceRoot, fileAbs),
-        line: lineNo,
-        text: text.trimEnd().slice(0, 200),
-        kind: evt.type === 'match' ? 'match' : 'context',
-      })
-    } catch {
-      /* skip malformed */
-    }
-  }
-
-  const matches: RgMatch[] = []
-  for (let i = 0; i < events.length; i++) {
-    const e = events[i]
-    if (e.kind !== 'match') continue
-    if (matches.length >= maxMatches) break
-
-    const before: { line: number; text: string }[] = []
-    for (let j = i - 1; j >= 0 && before.length < GREP_CONTEXT_LINES; j--) {
-      const prev = events[j]
-      if (prev.file !== e.file) break
-      if (prev.line >= e.line) continue
-      if (e.line - prev.line > GREP_CONTEXT_LINES + 1) break
-      before.unshift({ line: prev.line, text: prev.text })
-    }
-
-    const after: { line: number; text: string }[] = []
-    for (let j = i + 1; j < events.length && after.length < GREP_CONTEXT_LINES; j++) {
-      const next = events[j]
-      if (next.file !== e.file) break
-      if (next.line <= e.line) continue
-      if (next.line - e.line > GREP_CONTEXT_LINES + 1) break
-      after.push({ line: next.line, text: next.text })
-    }
-
-    matches.push({ file: e.file, line: e.line, text: e.text, before, after })
-  }
-
-  return sortGrepMatches(matches)
-}
-
-function formatGrepMatch(m: RgMatch): string {
-  const lines: string[] = []
-  for (const b of m.before) lines.push(`${m.file}:${b.line}:  ${b.text}`)
-  lines.push(`${m.file}:${m.line}:> ${m.text}`)
-  for (const a of m.after) lines.push(`${m.file}:${a.line}:  ${a.text}`)
-  return lines.join('\n')
-}
-
-function loadGitignoreIgnorePatterns(workspaceRoot: string): string[] {
-  const giPath = path.join(workspaceRoot, '.gitignore')
-  if (!fs.existsSync(giPath)) return []
-  let text: string
-  try {
-    text = fs.readFileSync(giPath, 'utf-8')
-  } catch {
-    return []
-  }
-  const patterns: string[] = []
-  for (const raw of text.split('\n')) {
-    const line = raw.trim()
-    if (!line || line.startsWith('#') || line.startsWith('!')) continue
-    let p = line.replace(/\\/g, '/')
-    if (p.endsWith('/')) p = p.slice(0, -1)
-    if (!p) continue
-    if (p.startsWith('/')) {
-      const rel = p.slice(1)
-      patterns.push(rel, `${rel}/**`)
-    } else if (p.includes('/')) {
-      patterns.push(p, `${p}/**`)
-    } else {
-      patterns.push(`**/${p}`, `**/${p}/**`)
-    }
-  }
-  return patterns
 }
 
 function resolveGlobPatterns(args: Record<string, unknown>): { patterns: string[]; label: string } | string {
@@ -407,45 +248,30 @@ async function globTool(ctx: ToolContext, args: Record<string, unknown>): Promis
   const resolved = resolveGlobPatterns(args)
   if (typeof resolved === 'string') return resolved
   const maxResults = clampInt(args.max_results, MAX_GLOB_RESULTS, 1, 200)
-  const hardIgnore = [...IGNORE_DIRS].map((d) => `**/${d}/**`)
-  const gitignorePatterns = loadGitignoreIgnorePatterns(ctx.workspaceRoot)
 
-  const runFg = (extraIgnore: string[]) =>
-    fg(resolved.patterns, {
-      cwd: ctx.workspaceRoot,
-      dot: false,
-      onlyFiles: true,
-      absolute: false,
-      suppressErrors: true,
-      unique: true,
-      ignore: [...hardIgnore, ...extraIgnore],
-    })
+  const files = await globFiles({
+    cwd: ctx.workspaceRoot,
+    patterns: resolved.patterns,
+    limit: maxResults + 1,
+  })
 
-  const [withGitignore, withoutGitignore] = await Promise.all([
-    runFg(gitignorePatterns),
-    runFg([]),
-  ])
-
-  const excludedByGitignore = Math.max(0, withoutGitignore.length - withGitignore.length)
-  const files = withGitignore
   const truncated = files.length > maxResults
   const slice = files.slice(0, maxResults)
 
   if (slice.length === 0) {
-    const bits = [`No files matched (${resolved.label}).`]
-    if (excludedByGitignore > 0) {
-      bits.push(
-        `${excludedByGitignore} file(s) matched the pattern but were excluded by .gitignore — try a more specific path or check ignored folders.`,
-      )
-    }
-    bits.push('Zero hits ≠ absent: retry with another preset/pattern before concluding nothing exists.')
-    return bits.join('\n')
+    return [
+      `No files matched (${resolved.label}).`,
+      'Ripgrep respects .gitignore — try a more specific path if files might be ignored.',
+      'Zero hits ≠ absent: retry with another preset/pattern before concluding nothing exists.',
+    ].join('\n')
   }
 
   const lines = [
     `${slice.length} file(s) (${resolved.label})${
-      truncated ? ` — truncated; ${files.length} total matched, showing first ${maxResults}. Narrow the pattern.` : ''
-    }${excludedByGitignore > 0 ? ` — ${excludedByGitignore} file(s) excluded by .gitignore.` : ''}:`,
+      truncated
+        ? ` — truncated; ${files.length} total matched, showing first ${maxResults}. Narrow the pattern.`
+        : ''
+    }:`,
     ...slice.map((f) => `- ${f}`),
   ]
   return lines.join('\n')
@@ -460,7 +286,6 @@ function collectGrepPatterns(args: Record<string, unknown>): string[] | string {
   }
   const single = typeof args.pattern === 'string' ? args.pattern.trim() : ''
   if (single) patterns.push(single)
-  // Deduplicate while preserving order
   const seen = new Set<string>()
   const unique = patterns.filter((p) => {
     if (seen.has(p)) return false
@@ -473,7 +298,6 @@ function collectGrepPatterns(args: Record<string, unknown>): string[] | string {
 }
 
 function wantsCaseInsensitive(args: Record<string, unknown>): boolean {
-  // Default: case-insensitive. Opt into case-sensitive explicitly.
   if (args.case_sensitive === true || args.case_sensitive === 'true' || args.caseSensitive === true) {
     return false
   }
@@ -481,55 +305,6 @@ function wantsCaseInsensitive(args: Record<string, unknown>): boolean {
     return false
   }
   return true
-}
-
-async function runSingleGrep(
-  ctx: ToolContext,
-  pattern: string,
-  searchAbs: string,
-  caseInsensitive: boolean,
-  maxMatches: number,
-): Promise<{ matches: RgMatch[]; error?: string; hitCap: boolean }> {
-  const rg = await resolveRgPath()
-  if (!rg) return { matches: [], error: 'error: ripgrep is unavailable', hitCap: false }
-
-  const rgArgs = [
-    '--json',
-    '-C',
-    String(GREP_CONTEXT_LINES),
-    '--max-count',
-    String(maxMatches),
-    '--glob',
-    '!**/node_modules/**',
-    '--glob',
-    '!**/dist/**',
-    '--glob',
-    '!**/out/**',
-    '--glob',
-    `!**/${STATE_DIR}/**`,
-    '--glob',
-    `!**/${LEGACY_STATE_DIR}/**`,
-  ]
-  if (caseInsensitive) rgArgs.push('-i')
-  rgArgs.push('--', pattern, searchAbs)
-
-  try {
-    const { stdout } = await execFileAsync(rg, rgArgs, {
-      maxBuffer: 2 * 1024 * 1024,
-      cwd: ctx.workspaceRoot,
-    })
-    const matches = parseRipgrepJson(stdout, ctx.workspaceRoot, maxMatches)
-    return { matches, hitCap: matches.length >= maxMatches }
-  } catch (err: unknown) {
-    const e = err as { code?: number | string; stdout?: string; message?: string }
-    if (e.code === 1) return { matches: [], hitCap: false }
-    if (e.stdout) {
-      const matches = parseRipgrepJson(e.stdout, ctx.workspaceRoot, maxMatches)
-      return { matches, hitCap: matches.length >= maxMatches }
-    }
-    if (e.code === 'ENOENT') return { matches: [], error: 'error: ripgrep binary not found', hitCap: false }
-    return { matches: [], error: `error: grep failed: ${e.message ?? String(err)}`, hitCap: false }
-  }
 }
 
 async function grepTool(ctx: ToolContext, args: Record<string, unknown>): Promise<string> {
@@ -541,18 +316,20 @@ async function grepTool(ctx: ToolContext, args: Record<string, unknown>): Promis
   if (!searchAbs) return 'error: path is outside the workspace'
 
   const caseInsensitive = wantsCaseInsensitive(args)
+  const include = typeof args.include === 'string' ? args.include : undefined
   const sections: string[] = []
   let anyHits = false
   let anyCap = false
 
   for (const pattern of patterns) {
-    const { matches, error, hitCap } = await runSingleGrep(
-      ctx,
+    const { matches, error, hitCap } = await grepSearch({
+      workspaceRoot: ctx.workspaceRoot,
       pattern,
-      searchAbs,
+      searchPath: searchAbs,
+      include,
       caseInsensitive,
-      MAX_GREP_MATCHES,
-    )
+      limit: MAX_GREP_MATCHES,
+    })
     if (error) return error
 
     if (matches.length === 0) {
@@ -572,85 +349,41 @@ async function grepTool(ctx: ToolContext, args: Record<string, unknown>): Promis
       `### pattern: ${JSON.stringify(pattern)} — ${matches.length} match(es)` +
         (caseInsensitive ? ' (case-insensitive)' : ' (case-sensitive)') +
         (hitCap
-          ? `\n⚠️ Hit the ${MAX_GREP_MATCHES}-match cap — results are incomplete. Narrow by path (subdirectory) or file type (e.g. path:"src" or a tighter regex), then grep again.`
+          ? `\n⚠️ Hit the ${MAX_GREP_MATCHES}-match cap — results are incomplete. Narrow by path (subdirectory) or file type, then grep again.`
           : ''),
     ]
     sections.push([...header, body].join('\n'))
   }
 
+  let result: string
   if (!anyHits) {
-    return [
+    result = [
       `No matches for ${patterns.length} pattern(s) under ${normalizeRel(searchPathRaw)}` +
         (caseInsensitive ? ' (case-insensitive).' : '.'),
       `Tried: ${patterns.map((p) => JSON.stringify(p)).join(', ')}`,
       'Zero hits ≠ absent: you MUST try at least one more differently-phrased grep (or glob) before claiming this is not in the codebase.',
     ].join('\n')
-  }
-
-  const footer: string[] = []
-  if (anyCap) {
+  } else {
+    const footer: string[] = []
+    if (anyCap) {
+      footer.push(
+        `Note: at least one pattern hit the ${MAX_GREP_MATCHES}-match cap. Do not assume you saw everything — narrow scope and search again if completeness matters.`,
+      )
+    }
+    if (patterns.length > 1) {
+      footer.push(`Searched ${patterns.length} patterns in one call; results grouped above.`)
+    }
     footer.push(
-      `Note: at least one pattern hit the ${MAX_GREP_MATCHES}-match cap. Do not assume you saw everything — narrow scope and search again if completeness matters.`,
+      'Reminder: grep hits are leads only. Call read_file on the top 1–2 files before stating facts.',
     )
-  }
-  if (patterns.length > 1) {
-    footer.push(`Searched ${patterns.length} patterns in one call; results grouped above.`)
+    result = `${sections.join('\n\n')}\n\n${footer.join('\n')}`
   }
 
-  return footer.length ? `${sections.join('\n\n')}\n\n${footer.join('\n')}` : sections.join('\n\n')
+  return result
 }
 
 function readFileTool(ctx: ToolContext, args: Record<string, unknown>): string {
-  const rel = String(args.path ?? '')
-  if (!rel) return 'error: "path" is required'
-  const abs = safeResolve(ctx.workspaceRoot, rel)
-  if (!abs) return 'error: path is outside the workspace'
-  let content: string
-  try {
-    content = fs.readFileSync(abs, 'utf-8')
-  } catch {
-    return `error: cannot read ${rel}`
-  }
-  const lines = content.split('\n')
-  const hasRange =
-    args.line_start != null ||
-    args.line_end != null ||
-    args.start != null ||
-    args.end != null
-
-  if (!hasRange) {
-    if (lines.length > MAX_READ_LINES) {
-      const numbered = lines
-        .slice(0, MAX_READ_LINES)
-        .map((l, i) => `${i + 1}\t${l}`)
-        .join('\n')
-      return `${rel}:1-${MAX_READ_LINES}\n${numbered}\n\n[truncated at line ${MAX_READ_LINES} of ${lines.length} — re-read with line_start/line_end for the rest; do not assume completeness]`
-    }
-    const numbered = lines.map((l, i) => `${i + 1}\t${l}`).join('\n')
-    return `${rel}:1-${lines.length}\n${numbered}`
-  }
-
-  const start = clampInt(
-    args.line_start ?? args.start,
-    1,
-    1,
-    Math.max(1, lines.length),
-  )
-  let end = clampInt(
-    args.line_end ?? args.end,
-    Math.min(lines.length, start + MAX_READ_LINES - 1),
-    start,
-    lines.length,
-  )
-  if (end - start + 1 > MAX_READ_LINES) end = start + MAX_READ_LINES - 1
-  const numbered = lines.slice(start - 1, end).map((l, i) => `${start + i}\t${l}`).join('\n')
-  const truncatedRange = end < lines.length && end - start + 1 >= MAX_READ_LINES
-  const suffix = truncatedRange
-    ? `\n\n[truncated at line ${end} of ${lines.length} — request another range for the rest]`
-    : end < lines.length
-      ? `\n\n[${end - start + 1} lines shown; file continues to line ${lines.length}]`
-      : ''
-  return `${rel}:${start}-${end}\n${numbered}${suffix}`
+  return readFilePageTool(ctx.workspaceRoot, args)
 }
 
 function countDirFiles(abs: string): { files: number; dirs: number } {
@@ -1063,5 +796,5 @@ export async function runTool(
   } catch (err) {
     return `error: ${err instanceof Error ? err.message : String(err)}`
   }
-  return out.length > MAX_OBS_CHARS ? out.slice(0, MAX_OBS_CHARS) + '\n…(truncated)' : out
+  return boundToolOutput(ctx.workspaceRoot, out)
 }

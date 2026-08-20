@@ -7,6 +7,7 @@ export interface ChatMessage {
   role: 'user' | 'assistant'
   text: string
   timestamp: number
+  researchCheckpoint?: string
 }
 
 const vscode = getVscodeApi()
@@ -24,20 +25,23 @@ const WELCOME: ChatMessage = {
 }
 
 /** How many prior UI turns to send (each user or assistant bubble counts as one). */
-const MAX_HISTORY_MESSAGES = 12
+const MAX_HISTORY_MESSAGES = 20
 /** Cap each prior bubble so context stays bounded. */
-const MAX_HISTORY_CHARS = 2_000
+const MAX_HISTORY_CHARS = 4_000
 
 // Agentic chat can make several tool + LLM round-trips, so allow generous time.
 const TIMEOUT_MS = 180_000
 
-function buildHistoryPayload(messages: ChatMessage[]): Array<{ role: 'user' | 'assistant'; text: string }> {
+function buildHistoryPayload(
+  messages: ChatMessage[],
+): Array<{ role: 'user' | 'assistant'; text: string; researchCheckpoint?: string }> {
   return messages
     .filter((m) => m.id !== WELCOME.id)
     .slice(-MAX_HISTORY_MESSAGES)
     .map((m) => ({
       role: m.role,
       text: m.text.length > MAX_HISTORY_CHARS ? `${m.text.slice(0, MAX_HISTORY_CHARS)}\n…(truncated)` : m.text,
+      ...(m.researchCheckpoint ? { researchCheckpoint: m.researchCheckpoint } : {}),
     }))
     .filter((m) => m.text.trim().length > 0)
 }
@@ -80,6 +84,9 @@ export function useChat(phase: string) {
           role: 'assistant',
           text: msg.text,
           timestamp: Date.now(),
+          ...(typeof msg.researchCheckpoint === 'string' && msg.researchCheckpoint.trim()
+            ? { researchCheckpoint: msg.researchCheckpoint }
+            : {}),
         }
         setMessages((prev) => [...prev, reply])
       }

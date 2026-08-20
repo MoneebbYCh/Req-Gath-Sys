@@ -7,6 +7,8 @@ export type View =
 export interface ChatHistoryTurn {
   role: 'user' | 'assistant'
   text: string
+  /** Read/search evidence from a prior assistant turn (injected on follow-ups). */
+  researchCheckpoint?: string
 }
 
 // --- In-document AI chat (/Chat block) wire contract ------------------------
@@ -43,7 +45,7 @@ export type ExtensionToWebviewMessage =
   | { type: 'loadCanvas'; phase: string; data: unknown }
   | { type: 'loadDocTypes'; data: unknown; mode?: 'merge' | 'replace' }
   | { type: 'navigateTo'; view: View }
-  | { type: 'chatResponse'; text: string }
+  | { type: 'chatResponse'; text: string; researchCheckpoint?: string | null }
   | { type: 'chatStatus'; text: string | null }
   | { type: 'workspaceInfo'; path: string; name: string; available: boolean }
   | { type: 'aiChatResponse'; requestId: string } & AiChatResponsePayload

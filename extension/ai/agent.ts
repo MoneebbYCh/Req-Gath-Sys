@@ -73,6 +73,8 @@ export interface ChatResult {
   message: string
   form_updated: boolean
   reload: ChatReload | null
+  /** Read/search evidence to attach to the assistant bubble for follow-up turns. */
+  researchCheckpoint: string | null
 }
 
 export interface ProcessChatArgs {
@@ -195,6 +197,7 @@ export async function processChat(args: ProcessChatArgs): Promise<ChatResult> {
         message: `${replyText}\n\n(${notes.join(' ')})`,
         form_updated: formUpdated,
         reload,
+        researchCheckpoint: result.researchCheckpoint,
       }
     }
   }
@@ -203,6 +206,7 @@ export async function processChat(args: ProcessChatArgs): Promise<ChatResult> {
     message: replyText,
     form_updated: formUpdated,
     reload,
+    researchCheckpoint: result.researchCheckpoint,
   }
 }
 

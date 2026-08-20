@@ -27,6 +27,10 @@
       {
         "command": "charter-ai.configureApiKey",
         "title": "Charter Ai: Configure API Key"
+      },
+      {
+        "command": "charter-ai.showAgentLog",
+        "title": "Charter Ai: Show Agent Log"
       }
     ],
     "menus": {
@@ -39,6 +43,9 @@
         },
         {
           "command": "charter-ai.configureApiKey"
+        },
+        {
+          "command": "charter-ai.showAgentLog"
         }
       ]
     }
@@ -49,6 +56,10 @@
     "build:extension": "esbuild extension/extension.ts --bundle --outfile=out/extension.cjs --external:vscode --external:mermaid --external:@vscode/ripgrep --format=cjs --platform=node --tsconfig=tsconfig.extension.json",
     "build": "npm run build:extension && npm run build:webview",
     "test": "vitest run",
+    "eval:read-accuracy": "vitest run extension/ai/readAccuracy.eval.test.ts extension/ai/researchCheckpoint.test.ts extension/ai/agentLoop.test.ts extension/ai/agentBudget.test.ts extension/ai/tokenEstimate.test.ts",
+    "eval:read-accuracy:live": "CHARTER_LIVE_EVAL=1 vitest run extension/ai/readAccuracy.live.test.ts",
+    "eval:read-accuracy:live:report": "node scripts/run-read-accuracy-live.mjs",
+    "eval:sandbox:prepare": "node scripts/prepare-eval-sandbox.mjs",
     "typecheck": "tsc -b tsconfig.json",
     "lint": "eslint .",
     "preview": "vite preview",
@@ -61,7 +72,6 @@
     "@mantine/core": "^9.4.2",
     "@mantine/hooks": "^9.4.2",
     "@vscode/ripgrep": "^1.18.0",
-    "fast-glob": "^3.3.3",
     "mermaid": "^11.16.0",
     "openai": "^4.104.0",
     "react": "^19.2.6",

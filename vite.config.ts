@@ -10,6 +10,10 @@ export default defineConfig({
   plugins: [react(), tailwindcss()],
   test: {
     environment: 'jsdom',
+    environmentMatchGlobs: [
+      // Live LLM eval must run in Node — jsdom triggers OpenAI's browser credential guard.
+      ['extension/ai/readAccuracy.live.test.ts', 'node'],
+    ],
     // globals enable @testing-library/react's auto-cleanup between tests
     globals: true,
     include: ['src/**/*.test.{ts,tsx}', 'extension/**/*.test.{ts,tsx}'],

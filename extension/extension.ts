@@ -12,11 +12,13 @@ import {
 import { resolveWorkspaceRoot } from './workspaceRoot'
 import { processChat } from './ai/agent'
 import { processInlineChat } from './ai/inlineChat'
+import { initDevLog, showDevLog, devLog } from './devLog'
 import type { WebviewToExtensionMessage, ExtensionToWebviewMessage } from './protocol'
 
-const log = (msg: string) => console.log('[CharterAi]', msg)
+const log = (msg: string) => devLog(msg)
 
 export function activate(context: vscode.ExtensionContext) {
+  initDevLog(context)
   let panel: vscode.WebviewPanel | undefined
 
   function getHtml(webview: vscode.Webview): string {
@@ -147,7 +149,11 @@ export function activate(context: vscode.ExtensionContext) {
           }
 
           postMessage({ type: 'chatStatus', text: null })
-          postMessage({ type: 'chatResponse', text: result.message })
+          postMessage({
+            type: 'chatResponse',
+            text: result.message,
+            researchCheckpoint: result.researchCheckpoint ?? null,
+          })
         } catch (err) {
           const errorMsg = err instanceof Error ? err.message : String(err)
           postMessage({ type: 'chatStatus', text: null })
@@ -244,6 +250,10 @@ export function activate(context: vscode.ExtensionContext) {
 
     vscode.commands.registerCommand('charter-ai.configureApiKey', async () => {
       await promptForApiKey(context)
+    }),
+
+    vscode.commands.registerCommand('charter-ai.showAgentLog', () => {
+      showDevLog(false)
     }),
 
     vscode.commands.registerCommand('charter-ai.initializeWorkspace', async () => {
