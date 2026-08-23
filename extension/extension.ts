@@ -84,7 +84,7 @@ export function activate(context: vscode.ExtensionContext) {
   // Provider credentials pass to the worker in workerData (runtime memory only,
   // never the webview).
   let agent: AgentRuntimeClient | undefined
-  let agentConfig: ProviderConfig = { providerId: 'deepseek', backend: 'openai', model: 'deepseek-v4-pro' }
+  let agentConfig: ProviderConfig = { providerId: 'deepseek', backend: 'openai', model: 'deepseek-v4-flash' }
 
   function readProviderSettings(): ProviderSettings {
     const cfg = vscode.workspace.getConfiguration('charterAi')
@@ -164,10 +164,11 @@ export function activate(context: vscode.ExtensionContext) {
               const p = payload as { name?: string; icon?: string }
               const meta = await docs.createDocType(p.name ?? 'Untitled Document', p.icon ?? 'article')
               // Push the authoritative registry to the webview so the new type
-              // appears in the pipeline without a reload, then open its editable
-              // dashboard canvas for the user.
+              // appears in the pipeline without a reload. Do NOT auto-navigate:
+              // opening the canvas mounts the editor, whose spurious save bumps
+              // the revision and parks the agent's next checkpoint as a false
+              // "edited during generation" conflict.
               postMessage({ type: 'loadDocTypes', data: await docs.listDocTypes(), mode: 'replace' })
-              postMessage({ type: 'navigateTo', view: { page: meta.id } })
               return { ok: true, result: meta }
             }
             if (op === 'loadDocumentIR') {
@@ -310,7 +311,7 @@ export function activate(context: vscode.ExtensionContext) {
       keyValidated: validation?.ok ?? false,
       model: settings.model.trim().startsWith('deepseek-')
         ? settings.model.trim()
-        : def.defaultModel || 'deepseek-v4-pro',
+        : def.defaultModel || 'deepseek-v4-flash',
       baseUrl: def.baseUrl,
       models: validation?.ok ? validation.models : [],
       error: validation && !validation.ok ? validation.error : undefined,

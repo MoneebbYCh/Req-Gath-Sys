@@ -68,7 +68,7 @@ export async function loadProviderConfig(
   return {
     providerId,
     backend: def.backend,
-    model: normalizeDeepSeekModel(settings.model, def.defaultModel || 'deepseek-v4-pro'),
+    model: normalizeDeepSeekModel(settings.model, def.defaultModel || 'deepseek-v4-flash'),
     baseUrl: def.baseUrl,
     apiKey: apiKey || undefined,
   }

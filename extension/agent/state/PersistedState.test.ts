@@ -101,6 +101,17 @@ describe('persistedAgentState', () => {
     expect(loaded2?.tasks).toHaveLength(0)
   })
 
+  it('survives concurrent saves without a temp-file rename collision', async () => {
+    const dir = await tmpdir()
+    const file = path.join(dir, 'state.json')
+    const store = createFileStateStore(file)
+    const states = Array.from({ length: 20 }, (_, i) => emptyState(`ws-${i}`, `fp-${i}`))
+    await Promise.all(states.map((s) => store.save(s)))
+    const entries = await fs.readdir(dir)
+    expect(entries.filter((e) => e.endsWith('.tmp'))).toEqual([])
+    expect((await store.load())?.workspaceId).toMatch(/^ws-/)
+  })
+
   it('returns null for a missing or corrupt file (fresh start, never a crash)', async () => {
     const dir = await tmpdir()
     expect(loadStateSync(path.join(dir, 'missing.json'))).toBeNull()

@@ -3,7 +3,7 @@ import * as fs from 'node:fs/promises'
 import { lstatSync, readFileSync, readdirSync, type Dirent } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import * as path from 'node:path'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { taskNodeSchema, type TaskNode } from '../contracts/TaskGraph'
 import {
   evidenceRecordSchema,
@@ -192,7 +192,10 @@ export function createFileStateStore(storagePath: string): StateStore {
     },
     async save(state) {
       const data = persistedAgentStateSchema.parse(state)
-      const tmp = `${storagePath}.${process.pid}.tmp`
+      // Unique temp name: concurrent node flushes (parallel workers) must not
+      // collide on a shared temp file — a fixed name races on rename (ENOENT)
+      // and one flush fails, which fails the node and blocks its dependents.
+      const tmp = `${storagePath}.${process.pid}.${randomUUID()}.tmp`
       await fs.mkdir(dir, { recursive: true })
       await fs.writeFile(tmp, JSON.stringify(data), 'utf8')
       await fs.rename(tmp, storagePath)

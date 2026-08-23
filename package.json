@@ -63,7 +63,7 @@
         "charterAi.model": {
           "type": "string",
           "default": "",
-          "markdownDescription": "DeepSeek model name to request. Empty uses `deepseek-v4-pro`."
+          "markdownDescription": "DeepSeek model name to request. Empty uses `deepseek-v4-flash`."
         },
         "charterAi.rolloutStage": {
           "type": "string",

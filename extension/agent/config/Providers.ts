@@ -23,7 +23,7 @@ export const PROVIDERS: readonly ProviderDefinition[] = [
     baseUrl: 'https://api.deepseek.com/v1',
     backend: 'openai',
     keyRequired: true,
-    defaultModel: 'deepseek-v4-pro',
+    defaultModel: 'deepseek-v4-flash',
   },
 ]
 
