@@ -145,6 +145,15 @@ describe('Planner', () => {
     expect(nodes.filter((n) => n.roleSpec.workerType === 'document')).toHaveLength(3)
   })
 
+  it('plans documents from explicit model-supplied titles without keyword guessing', () => {
+    const nodes = new Planner({ maxNodes: 12 }).planDocumentsByTitle(
+      'Create the following documents: PRD, Security review',
+      ['PRD', 'Security review'],
+    )
+    const documents = nodes.filter((n) => n.roleSpec.workerType === 'document')
+    expect(documents.map((d) => d.title)).toEqual(['PRD', 'Security review'])
+  })
+
   it('reserves enough graph capacity for every requested document at a tight node limit', () => {
     const nodes = new Planner({ maxNodes: 8 }).plan('Create 3 documents.')
 

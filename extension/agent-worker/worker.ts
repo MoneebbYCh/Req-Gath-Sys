@@ -10,7 +10,9 @@ import {
   toolLoopTaskRunner,
   type ToolExecutor,
   type ToolLoopConfig,
+  type BudgetTier,
 } from '../agent/model/toolLoopTaskRunner'
+import { singleLoopRunner } from '../agent/runtime/singleLoopRunner'
 import { EvidenceLedger } from '../agent/knowledge/EvidenceLedger'
 import { FindingStore } from '../agent/knowledge/FindingStore'
 import { ProjectFactBase } from '../agent/knowledge/ProjectFactBase'
@@ -27,7 +29,8 @@ import type { DocumentGateway, CheckpointResult, CreatedDocType } from '../agent
 import type { DocumentIR } from '../documents/DocumentIR'
 import type { ModelProvider } from '../agent/model/ModelProvider'
 import type { ModelToolDefinition } from '../agent/model/ModelTypes'
-import type { FinalSynthesisInput, FinalSynthesisContext } from '../agent/runtime/OrchestratorRunner'
+import type { TaskNode } from '../agent/contracts/TaskGraph'
+import type { FinalSynthesisInput, FinalSynthesisContext, NodeRunContext } from '../agent/runtime/OrchestratorRunner'
 import {
   parseHostToWorkerMessage,
   type WorkerToHostMessage,
@@ -95,6 +98,13 @@ function toWorkerType(value: string | undefined): OperationalDiagnostic['workerT
   return value === 'repository' || value === 'analysis' || value === 'document' || value === 'validation'
     ? value
     : undefined
+}
+
+/** Budget tier inferred from the configured model id (plan §16 model tiering). */
+function resolveBudgetTier(model: string): BudgetTier {
+  if (/flash|mini|small|haiku|turbo/i.test(model)) return 'fast'
+  if (/pro|opus|sonnet|reason|preview/i.test(model)) return 'reasoner'
+  return 'standard'
 }
 
 function createProvider(): ModelProvider {
@@ -278,10 +288,16 @@ const loopConfig: ToolLoopConfig = {
   model: init.model ?? '',
   tools,
   thinking: 'disabled',
+  // Workers (analysis/repository/validation) batch independent read-only tool
+  // calls within a pass when enabled — cuts serial read latency.
+  parallelToolCalls: featureFlags.parallelToolCalls ? 4 : 0,
   recordEvidence: (candidates, repositoryVersion) => {
     return candidates.map((c) => evidence.record(c, repositoryVersion).id)
   },
   telemetry: telemetryDiagnostic,
+  // Full-detail debug trace (LLM approach + tool args/output), separate from
+  // the content-free telemetry path above.
+  diagnostic: emitDiagnostic,
 }
 
 /**
@@ -305,6 +321,7 @@ async function synthesizeFinalAnswer(input: FinalSynthesisInput, ctx: FinalSynth
       maxModelCalls: 1,
       maxToolCalls: 0,
       maxOutputTokens: 1_500,
+      diagnostic: emitDiagnostic,
       system:
         'You are Charter Ai. Produce the final user-facing answer from completed structured analysis. ' +
         'Do not reveal worker reasoning, planning traces, or invented repository facts. ' +
@@ -391,58 +408,87 @@ const validationWorker = new ValidationWorker({
 const scheduler = new Scheduler({ limits: { document: featureFlags.parallelDocuments ? 2 : 1 } })
 const planner = new Planner({ modelProvider: contextualProvider, model: init.model ?? '' })
 
+// Shared node executor: dispatches a graph node to the matching typed worker.
+const runNode = async (node: TaskNode, ctx: NodeRunContext) => {
+  if (node.roleSpec.workerType === 'repository') {
+    const result = await explorerWorker.run(node, ctx)
+    return { outputs: result.outputs }
+  }
+  if (node.roleSpec.workerType === 'document') {
+    const result = await documentWorker.run(node, ctx)
+    return { outputs: result.outputs }
+  }
+  if (node.roleSpec.workerType === 'validation') {
+    const result = await validationWorker.run(node, ctx)
+    return { outputs: result.outputs, followups: result.followups }
+  }
+  const result = await analysisWorker.run(node, ctx)
+  return { outputs: result.outputs, followups: result.recommendedFollowups }
+}
+
+// Plan §14: graph changes and the shared knowledge layer are mirrored into
+// durable state so a resumed task never repeats completed work.
+const onGraphChange = (nodes: TaskNode[]) => {
+  recorder.onGraphChange(nodes)
+  recorder.onKnowledgeSnapshot({
+    findings: knowledge.findings.all(),
+    facts: knowledge.facts.all(),
+    evidence: knowledge.evidence.all(),
+  })
+}
+
+// A dependent DAG node cannot start until the previous node's graph and
+// outputs have reached the host's atomic state store.
+const onNodeDurable = () => recorder.flushAsync()
+
 const runtime = new AgentRuntime(
-  orchestratorRunner({
-    // Fast path for simple questions (plan §8).
-    simpleRunner: toolLoopTaskRunner(contextualProvider, executor, loopConfig),
-    // Disabling the task graph removes dynamic workers altogether rather than
-    // allowing an unseen graph to execute behind a flag.
-    router: featureFlags.taskGraph && featureFlags.subagents
-      ? undefined
-      : new ComplexityRouter({ classify: () => 'simple' }),
-    scheduler,
-    planner,
-    conversationContext: () =>
-      (sessions.snapshot()?.turns ?? [])
-        .slice(-6)
-        .map((turn) => `${turn.role.toUpperCase()}: ${turn.content}`),
-    // Analysis + per-document validation + cross-document consistency +
-    // regeneration follow-ups all fit within one durable graph.
-    maxNodes: 40,
-    // Plan §14: graph changes and the shared knowledge layer are mirrored
-    // into durable state so a resumed task never repeats completed work.
-    onGraphChange: (nodes) => {
-      recorder.onGraphChange(nodes)
-      recorder.onKnowledgeSnapshot({
-        findings: knowledge.findings.all(),
-        facts: knowledge.facts.all(),
-        evidence: knowledge.evidence.all(),
-      })
-    },
-    // A dependent DAG node cannot start until the previous node's graph and
-    // outputs have reached the host's atomic state store.
-    onNodeDurable: () => recorder.flushAsync(),
-    synthesize: synthesizeFinalAnswer,
-    runNode: async (node, ctx) => {
-      if (node.roleSpec.workerType === 'repository') {
-        const result = await explorerWorker.run(node, ctx)
-        return { outputs: result.outputs }
-      }
-      if (node.roleSpec.workerType === 'document') {
-        const result = await documentWorker.run(node, ctx)
-        return { outputs: result.outputs }
-      }
-      if (node.roleSpec.workerType === 'validation') {
-        const result = await validationWorker.run(node, ctx)
-        return { outputs: result.outputs, followups: result.followups }
-      }
-      const result = await analysisWorker.run(node, ctx)
-      return {
-        outputs: result.outputs,
-        followups: result.recommendedFollowups,
-      }
-    },
-  }),
+  featureFlags.singleLoop
+    ? singleLoopRunner({
+      provider: contextualProvider,
+      executor,
+      config: {
+        ...loopConfig,
+        // Hidden chain-of-thought: routing and tool planning are exactly the
+        // "complex decision making" CoT helps. The loop routes reasoning
+        // deltas to the provider's private reasoning channel — never chat.
+        thinking: 'enabled',
+        parallelToolCalls: featureFlags.parallelToolCalls ? 4 : 0,
+      },
+      budgetTier: resolveBudgetTier(init.model ?? ''),
+      includeDocumentTool: featureFlags.documentGeneration,
+      planner,
+      scheduler,
+      runNode,
+      onGraphChange,
+      onNodeDurable,
+      onLoopCheckpoint: (taskId, state) => recorder.onLoopCheckpoint(taskId, state),
+    })
+    : orchestratorRunner({
+      // Fast path for simple questions (plan §8).
+      simpleRunner: toolLoopTaskRunner(contextualProvider, executor, loopConfig),
+      // Disabling the task graph removes dynamic workers altogether rather than
+      // allowing an unseen graph to execute behind a flag.
+      router: featureFlags.taskGraph && featureFlags.subagents
+        ? undefined
+        : new ComplexityRouter({ classify: () => 'simple' }),
+      scheduler,
+      planner,
+      conversationContext: () =>
+        (sessions.snapshot()?.turns ?? [])
+          .slice(-6)
+          .map((turn) => `${turn.role.toUpperCase()}: ${turn.content}`),
+      // Analysis + per-document validation + cross-document consistency +
+      // regeneration follow-ups all fit within one durable graph.
+      maxNodes: 40,
+      // Plan §14: graph changes and the shared knowledge layer are mirrored
+      // into durable state so a resumed task never repeats completed work.
+      onGraphChange,
+      // A dependent DAG node cannot start until the previous node's graph and
+      // outputs have reached the host's atomic state store.
+      onNodeDurable,
+      synthesize: synthesizeFinalAnswer,
+      runNode,
+    }),
 )
 
 const taskResponses = new Map<string, string>()
@@ -493,7 +539,7 @@ parentPort?.on('message', (raw: unknown) => {
       runtime.cancel(msg.taskId)
       break
     case 'resume':
-      runtime.resume(msg.taskId, recorder.resumeGraph(msg.taskId))
+      runtime.resume(msg.taskId, recorder.resumePayload(msg.taskId))
       break
     case 'snapshot':
       runtime.sendSnapshot()
@@ -523,8 +569,13 @@ if (sameWorkspace) {
     }
   }
   // Simple tasks (no graph) resume by re-running their original question.
+  // Single-loop tasks resume from their last durable loop checkpoint; when the
+  // repository changed mid-task, that checkpoint's evidence is stale, so the
+  // loop re-runs from scratch instead of trusting it.
   for (const taskId of runtime.interruptedTasks()) {
-    runtime.resume(taskId, recorder.resumeGraph(taskId))
+    const payload = recorder.resumePayload(taskId)
+    const safe = fingerprintChanged ? { graph: payload.graph, outputs: payload.outputs } : payload
+    runtime.resume(taskId, safe)
   }
 }
 recorder.flush()

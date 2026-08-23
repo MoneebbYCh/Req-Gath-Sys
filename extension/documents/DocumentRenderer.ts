@@ -102,5 +102,32 @@ function renderBlock(block: IRBlock): Array<Record<string, unknown>> {
           },
         },
       ]
+    case 'kpiGrid':
+      return [
+        {
+          type: 'kpiGrid',
+          props: {
+            itemsJson: JSON.stringify(
+              block.items.map((i) => ({ metric: i.metric, target: i.target ?? '', method: i.method ?? '' })),
+            ),
+          },
+        },
+      ]
+    case 'stakeholderTable':
+      return [
+        {
+          type: 'stakeholderTable',
+          props: {
+            rowsJson: JSON.stringify(
+              block.rows.map((r) => ({
+                nameRole: r.nameRole,
+                interest: r.interest ?? '',
+                influence: r.influence ?? '',
+                concern: r.concern ?? '',
+              })),
+            ),
+          },
+        },
+      ]
   }
 }

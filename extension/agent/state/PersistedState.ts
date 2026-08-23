@@ -18,6 +18,7 @@ import {
 import { documentIrSchema, type DocumentIR } from '../../documents/DocumentIR'
 import type { AgentSurfaceContext, DocumentProgressState, PlanView } from '../../../shared/agentProtocol'
 import { agentSessionSchema, type AgentSession } from '../session'
+import type { ModelMessage } from '../model/ModelTypes'
 
 /**
  * Durable agent state (plan §14 + §25): what survives an extension-host
@@ -32,6 +33,19 @@ import { agentSessionSchema, type AgentSession } from '../session'
  */
 
 export type PersistedTaskStatus = 'running' | 'completed' | 'failed' | 'cancelled'
+
+/**
+ * Mid-loop conversation for single-loop tasks (plan §14): enough of the message
+ * history + counters to resume the bounded ReAct loop after a restart without
+ * repeating completed tool calls. Compacted (last few messages, truncated) so
+ * it stays a bounded fraction of the durable state file.
+ */
+export interface LoopState {
+  messages: ModelMessage[]
+  toolCallsUsed: number
+  modelCallsUsed: number
+  evidenceIds: string[]
+}
 
 export interface PersistedTask {
   taskId: string
@@ -50,6 +64,8 @@ export interface PersistedTask {
   nextSeq?: number
   /** Full task graph for complex tasks — statuses/outputs included. */
   graph?: TaskNode[]
+  /** Mid-loop state for single-loop tasks (plan §14 resume). */
+  loopState?: LoopState
 }
 
 export interface PersistedAgentState {
@@ -91,6 +107,32 @@ const planViewSchema = z.object({
   ),
 })
 
+const loopMessageSchema = z.discriminatedUnion('role', [
+  z.object({ role: z.literal('system'), content: z.string().max(4_000) }),
+  z.object({ role: z.literal('user'), content: z.string().max(4_000) }),
+  z.object({
+    role: z.literal('assistant'),
+    content: z.string().max(4_000),
+    reasoningContent: z.string().max(4_000).optional(),
+    toolCalls: z.array(
+      z.object({ id: z.string(), name: z.string(), arguments: z.string().max(4_000) }),
+    ).optional(),
+  }),
+  z.object({
+    role: z.literal('tool'),
+    content: z.string().max(4_000),
+    toolCallId: z.string(),
+    name: z.string(),
+  }),
+])
+
+const loopStateSchema = z.object({
+  messages: z.array(loopMessageSchema).max(6),
+  toolCallsUsed: z.number().int().nonnegative(),
+  modelCallsUsed: z.number().int().nonnegative(),
+  evidenceIds: z.array(z.string()),
+})
+
 const persistedTaskSchema = z.object({
   taskId: z.string(),
   requestId: z.string(),
@@ -104,6 +146,7 @@ const persistedTaskSchema = z.object({
   documents: z.array(documentProgressStateSchema),
   error: z.string().optional(),
   graph: z.array(taskNodeSchema).optional(),
+  loopState: loopStateSchema.optional(),
 })
 
 export const persistedAgentStateSchema = z.object({

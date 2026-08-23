@@ -16,6 +16,10 @@ export interface AgentFeatureFlags {
   validation: boolean
   parallelDocuments: boolean
   semanticRetrieval: boolean
+  /** Single-loop ReAct runner replaces deterministic routing for every request. */
+  singleLoop: boolean
+  /** Batched execution of independent read-only tool calls within one pass. */
+  parallelToolCalls: boolean
 }
 
 export const agentFeatureFlagsSchema = z.object({
@@ -28,6 +32,8 @@ export const agentFeatureFlagsSchema = z.object({
   validation: z.boolean(),
   parallelDocuments: z.boolean(),
   semanticRetrieval: z.boolean(),
+  singleLoop: z.boolean(),
+  parallelToolCalls: z.boolean(),
 })
 
 export type RolloutStage = 'gate-a' | 'gate-b' | 'gate-c' | 'gate-d' | 'gate-e' | 'full'
@@ -45,11 +51,15 @@ export const FULL_FEATURE_FLAGS: AgentFeatureFlags = {
   validation: true,
   parallelDocuments: true,
   semanticRetrieval: false,
+  singleLoop: true,
+  parallelToolCalls: true,
 }
 
 const STAGE_FLAGS: Record<RolloutStage, AgentFeatureFlags> = {
-  'gate-a': { ...FULL_FEATURE_FLAGS, repositoryTools: false, lsp: false, taskGraph: false, subagents: false, documentGeneration: false, validation: false, parallelDocuments: false },
-  'gate-b': { ...FULL_FEATURE_FLAGS, lsp: false, taskGraph: false, subagents: false, documentGeneration: false, validation: false, parallelDocuments: false },
+  // The single-loop runner only becomes available with the full capability set
+  // (gate-c onward). Earlier shells keep the legacy two-path orchestrator.
+  'gate-a': { ...FULL_FEATURE_FLAGS, repositoryTools: false, lsp: false, taskGraph: false, subagents: false, documentGeneration: false, validation: false, parallelDocuments: false, singleLoop: false, parallelToolCalls: false },
+  'gate-b': { ...FULL_FEATURE_FLAGS, lsp: false, taskGraph: false, subagents: false, documentGeneration: false, validation: false, parallelDocuments: false, singleLoop: false, parallelToolCalls: false },
   'gate-c': { ...FULL_FEATURE_FLAGS, parallelDocuments: false },
   'gate-d': { ...FULL_FEATURE_FLAGS },
   'gate-e': { ...FULL_FEATURE_FLAGS },
@@ -67,8 +77,9 @@ export function resolveFeatureFlags(
 ): AgentFeatureFlags {
   const flags = { ...STAGE_FLAGS[stage], ...override }
   if (!flags.streaming) {
-    return { ...flags, repositoryTools: false, lsp: false, taskGraph: false, subagents: false, documentGeneration: false, validation: false, parallelDocuments: false }
+    return { ...flags, repositoryTools: false, lsp: false, taskGraph: false, subagents: false, documentGeneration: false, validation: false, parallelDocuments: false, singleLoop: false, parallelToolCalls: false }
   }
+  if (!flags.singleLoop) flags.parallelToolCalls = false
   if (!flags.repositoryTools) flags.lsp = false
   if (!flags.taskGraph) {
     flags.subagents = false

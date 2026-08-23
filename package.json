@@ -67,7 +67,14 @@
         },
         "charterAi.rolloutStage": {
           "type": "string",
-          "enum": ["gate-a", "gate-b", "gate-c", "gate-d", "gate-e", "full"],
+          "enum": [
+            "gate-a",
+            "gate-b",
+            "gate-c",
+            "gate-d",
+            "gate-e",
+            "full"
+          ],
           "default": "full",
           "markdownDescription": "Development rollout stage for CharterAI agent capabilities. `full` enables every implemented capability; featureFlags can disable individual capabilities for a controlled rollout."
         },
@@ -78,9 +85,14 @@
         },
         "charterAi.diagnosticsLevel": {
           "type": "string",
-          "enum": ["debug", "info", "warn", "error"],
+          "enum": [
+            "debug",
+            "info",
+            "warn",
+            "error"
+          ],
           "default": "info",
-          "markdownDescription": "Minimum severity written to the CharterAI Agent Diagnostics output channel. Diagnostics contain safe operational metadata only; prompts, source code, tool payloads, and credentials are excluded."
+          "markdownDescription": "Minimum severity written to the CharterAI Agent Diagnostics output channel. `info` (default) and above stay content-free — no prompts, tool payloads, source, or credentials. Set to `debug` to additionally trace the LLM approach (system prompt, thinking mode, model, tools) and each tool call's arguments and output. Provider credentials are never written."
         }
       }
     }
@@ -89,7 +101,7 @@
     "dev": "vite",
     "build:webview": "vite build",
     "build:extension": "esbuild extension/extension.ts --bundle --outfile=out/extension.cjs --external:vscode --external:mermaid --external:@vscode/ripgrep --format=cjs --platform=node --tsconfig=tsconfig.extension.json",
-    "build:worker": "esbuild extension/agent-worker/worker.ts --bundle --outfile=out/agent-worker.cjs --format=cjs --platform=node --tsconfig=tsconfig.extension.json",
+    "build:worker": "esbuild extension/agent-worker/worker.ts --bundle --outfile=out/agent-worker.cjs --format=cjs --platform=node --tsconfig=tsconfig.extension.json --external:mermaid --external:jsdom --supported:dynamic-import=true",
     "build": "npm run build:extension && npm run build:worker && npm run build:webview",
     "test": "vitest run",
     "evaluate": "vitest run extension/agent/eval extension/agent/rollout",
@@ -106,6 +118,7 @@
     "@mantine/hooks": "^9.4.2",
     "@vscode/ripgrep": "^1.18.0",
     "fast-glob": "^3.3.3",
+    "jsdom": "^29.1.1",
     "mermaid": "^11.16.0",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
@@ -115,6 +128,7 @@
     "@eslint/js": "^10.0.1",
     "@tailwindcss/vite": "^4.3.0",
     "@testing-library/react": "^16.3.2",
+    "@types/jsdom": "^30.0.0",
     "@types/node": "^24.12.3",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
@@ -125,7 +139,6 @@
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.2",
     "globals": "^17.6.0",
-    "jsdom": "^29.1.1",
     "tailwindcss": "^4.3.0",
     "typescript": "~6.0.2",
     "typescript-eslint": "^8.67.0",

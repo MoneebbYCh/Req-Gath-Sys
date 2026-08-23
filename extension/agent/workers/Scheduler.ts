@@ -44,6 +44,17 @@ export class Scheduler {
   }
 
   /**
+   * Total concurrent nodes allowed across all worker types — the sum of the
+   * per-type limits. This is the authoritative task-level concurrency ceiling;
+   * orchestrators should use it instead of deriving a cap from per-node
+   * budgets (a node's `maxParallelWorkers` describes its own internal model
+   * concurrency, not a whole-graph cap).
+   */
+  maxConcurrency(): number {
+    return Object.values(this.limits).reduce((sum, limit) => sum + limit, 0)
+  }
+
+  /**
    * Runs every runnable node until no ready nodes remain. `execute` returns
    * the node's outputs; a throw marks the node failed. Starts no new work once
    * `signal` aborts (in-flight workers observe the abort themselves).

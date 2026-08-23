@@ -164,6 +164,12 @@ export class DocumentService {
   private revisionsSaveChain: Promise<void> = Promise.resolve()
   private draftsSaveChain: Promise<void> = Promise.resolve()
   private readonly documentWriteChains = new Map<string, Promise<void>>()
+  /**
+   * Serializes registry mutations (create/rename/delete/move). Each is a
+   * read-modify-write over the whole doc-types list, so parallel document
+   * creation must not interleave or the later write clobbers the earlier one.
+   */
+  private registryChain: Promise<unknown> = Promise.resolve()
 
   constructor(workspaceRootOrStore: string | DocumentStore) {
     this.store = typeof workspaceRootOrStore === 'string' ? formStateDocumentStore(workspaceRootOrStore) : workspaceRootOrStore
@@ -225,6 +231,14 @@ export class DocumentService {
     }
   }
 
+  /** Run a registry read-modify-write after any in-flight registry mutation settles. */
+  private withRegistryLock<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.registryChain.then(operation)
+    // Never let a failed mutation poison the chain for later callers.
+    this.registryChain = result.then(() => {}, () => {})
+    return result
+  }
+
   /** Current revision for a document (0 = created but never written). */
   revisionOf(documentId: string): number {
     return this.revisions.get(documentId) ?? 0
@@ -258,56 +272,64 @@ export class DocumentService {
    * collision) plus an empty canvas so the document is immediately openable.
    */
   async createDocType(name: string, icon = 'article'): Promise<CreatedDocType> {
-    const trimmed = name.trim() || 'Untitled Document'
-    const existing = await this.store.listDocTypes()
-    const taken = new Set(existing.map((v) => this.docIdOf(v)))
-    const base = `doc-${slugify(trimmed) || 'document'}`
-    let id = base
-    let n = 2
-    while (taken.has(id)) id = `${base}-${n++}`
+    return this.withRegistryLock(async () => {
+      const trimmed = name.trim() || 'Untitled Document'
+      const existing = await this.store.listDocTypes()
+      const taken = new Set(existing.map((v) => this.docIdOf(v)))
+      const base = `doc-${slugify(trimmed) || 'document'}`
+      let id = base
+      let n = 2
+      while (taken.has(id)) id = `${base}-${n++}`
 
-    const created: unknown = { id, name: trimmed, icon, createdAt: Date.now(), order: existing.length }
-    await this.store.saveDocTypes([...existing, created])
-    await this.store.saveDocument(id, EMPTY_CANVAS)
-    return { id, name: trimmed, icon, created: true }
+      const created: unknown = { id, name: trimmed, icon, createdAt: Date.now(), order: existing.length }
+      await this.store.saveDocTypes([...existing, created])
+      await this.store.saveDocument(id, EMPTY_CANVAS)
+      return { id, name: trimmed, icon, created: true }
+    })
   }
 
   /** Rename a registry entry (extension is the authority — plan §16.1). */
   async renameDocType(id: string, name: string): Promise<void> {
-    const trimmed = name.trim()
-    if (!trimmed) return
-    const existing = await this.store.listDocTypes()
-    await this.store.saveDocTypes(
-      existing.map((v) => (this.docIdOf(v) === id ? { ...(v as object), name: trimmed } : v)),
-    )
+    return this.withRegistryLock(async () => {
+      const trimmed = name.trim()
+      if (!trimmed) return
+      const existing = await this.store.listDocTypes()
+      await this.store.saveDocTypes(
+        existing.map((v) => (this.docIdOf(v) === id ? { ...(v as object), name: trimmed } : v)),
+      )
+    })
   }
 
   /** Remove a registry entry (the canvas file is left in place, like the webview did). */
   async deleteDocType(id: string): Promise<void> {
-    const existing = await this.store.listDocTypes()
-    await this.store.saveDocTypes(existing.filter((v) => this.docIdOf(v) !== id))
-    this.revisions.delete(id)
-    this.scheduleRevisionsSave()
-    this.pendingByDocument.delete(id)
+    return this.withRegistryLock(async () => {
+      const existing = await this.store.listDocTypes()
+      await this.store.saveDocTypes(existing.filter((v) => this.docIdOf(v) !== id))
+      this.revisions.delete(id)
+      this.scheduleRevisionsSave()
+      this.pendingByDocument.delete(id)
+    })
   }
 
   /** Reorder the registry: move the entry at `from` to index `to`. */
   async moveDocType(_id: string, from: number, to: number): Promise<void> {
-    const existing = await this.store.listDocTypes()
-    if (
-      !Number.isInteger(from) ||
-      !Number.isInteger(to) ||
-      from < 0 ||
-      to < 0 ||
-      from >= existing.length ||
-      to >= existing.length
-    ) {
-      return
-    }
-    const next = [...existing]
-    const [moved] = next.splice(from, 1)
-    next.splice(to, 0, moved)
-    await this.store.saveDocTypes(next.map((v, i) => ({ ...(v as object), order: i })))
+    return this.withRegistryLock(async () => {
+      const existing = await this.store.listDocTypes()
+      if (
+        !Number.isInteger(from) ||
+        !Number.isInteger(to) ||
+        from < 0 ||
+        to < 0 ||
+        from >= existing.length ||
+        to >= existing.length
+      ) {
+        return
+      }
+      const next = [...existing]
+      const [moved] = next.splice(from, 1)
+      next.splice(to, 0, moved)
+      await this.store.saveDocTypes(next.map((v, i) => ({ ...(v as object), order: i })))
+    })
   }
 
   async loadDocument(documentId: string): Promise<RenderedCanvasDocument | null> {

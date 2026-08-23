@@ -62,6 +62,24 @@ describe('persistedAgentState', () => {
     expect(persistedAgentStateSchema.safeParse(raw).success).toBe(false)
   })
 
+  it('round-trips a single-loop checkpoint (plan §14 resume)', () => {
+    const state = sampleState()
+    state.tasks[0].loopState = {
+      messages: [
+        { role: 'user', content: 'original question' },
+        { role: 'assistant', content: 'partial', toolCalls: [{ id: 'c1', name: 'search_code', arguments: '{}' }] },
+        { role: 'tool', content: '{"matches":[]}', toolCallId: 'c1', name: 'search_code' },
+      ],
+      toolCallsUsed: 1,
+      modelCallsUsed: 1,
+      evidenceIds: ['e-1'],
+    }
+    const parsed = persistedAgentStateSchema.parse(JSON.parse(JSON.stringify(state)))
+    expect(parsed.tasks[0].loopState?.messages).toHaveLength(3)
+    expect(parsed.tasks[0].loopState?.toolCallsUsed).toBe(1)
+    expect(parsed.tasks[0].loopState?.evidenceIds).toEqual(['e-1'])
+  })
+
   it('writes atomically (temp file + rename, no tmp leftover) and loads back', async () => {
     const dir = await tmpdir()
     const file = path.join(dir, 'state.json')

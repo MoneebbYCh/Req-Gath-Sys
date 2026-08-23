@@ -26,6 +26,35 @@ describe('worker protocol runtime schemas', () => {
     expect(parseHostToWorkerMessage({ type: 'deleteWorkspace', path: '/' })).toBeNull()
   })
 
+  it('accepts document-structure diagnostics emitted by the document worker (plan §13)', () => {
+    const message = {
+      type: 'diagnostic',
+      diagnostic: {
+        event: 'document.completed',
+        taskId: 'task-1',
+        nodeId: 'node-1',
+        workerType: 'document',
+        documentEvent: 'section_parse_attempt',
+        documentOperation: 'generate',
+        sectionIndex: 0,
+        attempt: 1,
+        parseOutcome: 'valid',
+        responseBytes: 100,
+        jsonExtracted: true,
+        blockCount: 3,
+        schemaIssueCount: 0,
+        schemaIssueCodes: [],
+        checkpointPending: false,
+        ok: true,
+      },
+    }
+    expect(parseWorkerToHostMessage(message)).not.toBeNull()
+    // A leaked content field is still rejected (strict schema).
+    expect(
+      parseWorkerToHostMessage({ type: 'diagnostic', diagnostic: { event: 'x', documentEvent: 'section_parse_attempt', prompt: 'secret' } }),
+    ).toBeNull()
+  })
+
   it('rejects malformed worker events, tool requests, document checkpoints, and persistence', () => {
     expect(parseWorkerToHostMessage({ type: 'event', event: { type: 'unknown', taskId: 't', seq: 0, timestamp: 0 } })).toBeNull()
     expect(parseWorkerToHostMessage({ type: 'event', event: { type: 'agentTaskStarted', taskId: 4, seq: 0, timestamp: 0, title: 'x' } })).toBeNull()

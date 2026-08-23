@@ -8,6 +8,7 @@ import {
   MAX_PERSISTED_EVIDENCE,
   MAX_PERSISTED_TASKS,
   emptyState,
+  type LoopState,
   type PersistedAgentState,
   type PersistedTask,
 } from './PersistedState'
@@ -237,6 +238,28 @@ export class StateRecorder {
       if (n.status === 'completed') outputs[n.id] = n.outputs
     }
     return { graph: task.graph, outputs }
+  }
+
+  /** Mid-loop conversation for a single-loop task (plan §14 resume). */
+  resumeLoop(taskId: string): LoopState | undefined {
+    return this.state.tasks.find((t) => t.taskId === taskId)?.loopState
+  }
+
+  /** Mirror a mid-loop checkpoint into the durable task record. */
+  onLoopCheckpoint(taskId: string, loopState: LoopState): void {
+    const task = this.state.tasks.find((t) => t.taskId === taskId)
+    if (!task) return
+    task.loopState = loopState
+    this.schedule()
+  }
+
+  /** Combined resume payload the runtime passes to a single-loop or graph runner. */
+  resumePayload(taskId: string): { graph?: TaskNode[]; outputs?: Record<string, string[]>; loopState?: LoopState } {
+    const graph = this.resumeGraph(taskId)
+    return {
+      ...(graph ?? {}),
+      loopState: this.resumeLoop(taskId),
+    }
   }
 
   /** The document IRs that must survive a restart (host restores them). */

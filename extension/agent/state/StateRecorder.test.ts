@@ -186,6 +186,28 @@ describe('StateRecorder', () => {
     expect(payload.outputs['n-a']).toEqual([]) // completed node outputs restored
   })
 
+  it('mirrors single-loop checkpoints and returns a resume payload with loopState', () => {
+    const records: PersistedAgentState[] = []
+    const recorder = new StateRecorder(emptyState('ws-1', 'fp-1'), sink(records))
+    recorder.onEvent(event({ type: 'agentTaskStarted', taskId: 't-loop', title: 'Loop task' }))
+    recorder.onLoopCheckpoint('t-loop', {
+      messages: [
+        { role: 'user', content: 'question' },
+        { role: 'assistant', content: 'working' },
+      ],
+      toolCallsUsed: 2,
+      modelCallsUsed: 2,
+      evidenceIds: ['e-1'],
+    })
+    recorder.flush()
+
+    expect(records[0].tasks[0].loopState).toMatchObject({ toolCallsUsed: 2, modelCallsUsed: 2 })
+    const payload = recorder.resumePayload('t-loop')
+    expect(payload.graph).toBeUndefined()
+    expect(payload.loopState?.messages).toHaveLength(2)
+    expect(payload.loopState?.evidenceIds).toEqual(['e-1'])
+  })
+
   it('wipes tasks when the workspace changes (no cross-contamination)', () => {
     const state = emptyState('ws-old', 'fp-old')
     state.tasks.push({

@@ -25,6 +25,34 @@ describe('DocumentService', () => {
     expect(store.docTypes).toHaveLength(2)
   })
 
+  it('does not lose a registry entry when documents are created concurrently', async () => {
+    const store = memoryDocumentStore()
+    // Introduce an async gap so two createDocType read-modify-writes interleave,
+    // mirroring the parallel-document path that used to clobber one entry.
+    const gapped: typeof store = {
+      ...store,
+      async listDocTypes() {
+        await new Promise((r) => setTimeout(r, 5))
+        return store.listDocTypes()
+      },
+      async saveDocTypes(data: unknown[]) {
+        await new Promise((r) => setTimeout(r, 5))
+        return store.saveDocTypes(data)
+      },
+    }
+    const service = new DocumentService(gapped)
+
+    const [a, b] = await Promise.all([
+      service.createDocType('PRD'),
+      service.createDocType('System Architecture'),
+    ])
+
+    const ids = (await service.listDocTypes()).map((v) => (v as { id: string }).id)
+    expect(ids).toContain(a.id)
+    expect(ids).toContain(b.id)
+    expect(ids).toHaveLength(2)
+  })
+
   it('checkpoints full rendered documents revision-safely', async () => {
     const store = memoryDocumentStore()
     const service = new DocumentService(store)

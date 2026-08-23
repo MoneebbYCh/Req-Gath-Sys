@@ -30,6 +30,15 @@ Each pipeline document is a BlockNote canvas persisted as JSON under
 blocks: `callout`, `kpiGrid`, `scopeBounds`, `stakeholderTable`, `riskList`, `diagram`
 (Mermaid), plus standard headings, paragraphs, and lists.
 
+Every block the agent emits is deterministically sanitized before checkpointing
+(variant aliases, ragged table rows, fence-wrapped diagrams, empty items, and
+enum casing are coerced; hopeless shapes become editable warn callouts). Mermaid
+diagrams additionally pass the same `mermaid.parse` grammar the webview renders
+(validated in the isolated worker under jsdom), get one model repair pass fed with
+the exact parse error, and degrade to an editable "Diagram needs review" callout if
+they still fail. The webview remains the final backstop: any diagram that slips
+through renders an inline error instead of a broken canvas.
+
 ## Getting started
 
 ```bash
@@ -71,9 +80,18 @@ Run **Charter Ai: Show Agent Diagnostics** from the Command Palette to open the 
 `CharterAI Agent Diagnostics` Output channel. Each line is structured JSON that can be
 filtered by `taskId`, `nodeId`, `event`, `tool`, `model`, `durationMs`, token counts,
 concurrency, and normalized error category. Use `charterAi.diagnosticsLevel` to select
-`debug`, `info` (default), `warn`, or `error` detail. Diagnostics deliberately exclude
-repository source, prompts, model responses, tool arguments/results, absolute paths, and
-provider credentials.
+`debug`, `info` (default), `warn`, or `error` detail.
+
+At `info` and above, diagnostics stay content-free: repository source, prompts, model
+responses, tool arguments/results, absolute paths, and provider credentials are excluded.
+At `debug`, two extra content-bearing events are added for full agent tracing:
+
+- `llm.approach` — the model, system prompt, thinking mode, response format, route,
+  available tools, and loop budgets for each tool-loop invocation.
+- `tool.executed` — each tool call's name, the arguments passed, and its full output
+  (or error), plus duration and success.
+
+Provider credentials are never written at any level.
 
 ## Contributing
 

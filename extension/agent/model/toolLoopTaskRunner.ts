@@ -10,6 +10,7 @@ import type {
 } from './ModelTypes'
 import { ProviderError, isRetryableProviderError } from './ProviderError'
 import { TaskBudgetController, type TaskTelemetry } from '../observability/TaskControls'
+import type { OperationalDiagnostic } from '../observability/OperationalLogger'
 
 const DEFAULT_SYSTEM =
   'You are Charter Ai, a read-only repository analysis assistant. Answer accurately ' +
@@ -58,6 +59,36 @@ export interface ToolLoopConfig {
   budgetController?: TaskBudgetController
   telemetry?: TaskTelemetry
   telemetryContext?: { taskId?: string; nodeId?: string; workerType?: string; route?: 'strong' | 'fast' }
+  /**
+   * Content-bearing debug trace (LLM approach, tool args/output). Optional and
+   * only wired in when a caller wants full detail; emit at `level: 'debug'`.
+   */
+  diagnostic?: (d: OperationalDiagnostic) => void
+  /**
+   * Batched execution of independent tool calls within one pass. Unset/0 keeps
+   * the legacy sequential behavior; a value >1 is the concurrency ceiling.
+   * All repository tools are read-only, so batching is safe.
+   */
+  parallelToolCalls?: number
+  /** Invoked after each pass so callers can mirror mid-loop state durably. */
+  onLoopCheckpoint?: (state: LoopCheckpoint) => void
+}
+
+/** Mid-loop snapshot handed to durable state (plan §14 single-loop resume). */
+export interface LoopCheckpoint {
+  messages: ModelMessage[]
+  toolCallsUsed: number
+  modelCallsUsed: number
+  evidenceIds: string[]
+}
+
+/** Budget presets selected by model tier (plan §16 model tiering). */
+export type BudgetTier = 'fast' | 'standard' | 'reasoner'
+
+export const TOOL_LOOP_BUDGET_PRESETS: Record<BudgetTier, { maxIterations: number; maxToolCalls: number; maxInputTokens: number; maxOutputTokens: number }> = {
+  fast: { maxIterations: 8, maxToolCalls: 24, maxInputTokens: 48_000, maxOutputTokens: 8_000 },
+  standard: { maxIterations: 6, maxToolCalls: 18, maxInputTokens: 40_000, maxOutputTokens: 6_000 },
+  reasoner: { maxIterations: 4, maxToolCalls: 12, maxInputTokens: 32_000, maxOutputTokens: 4_000 },
 }
 
 interface PassResult {
@@ -207,6 +238,65 @@ function parseToolArguments(raw: string): unknown {
   }
 }
 
+function toWorkerType(value: string | undefined): OperationalDiagnostic['workerType'] {
+  return value === 'repository' || value === 'analysis' || value === 'document' || value === 'validation'
+    ? value
+    : undefined
+}
+
+interface ToolCallSlot {
+  call: ModelToolCall
+  canUse: boolean
+}
+
+interface ToolExecution {
+  name: string
+  result: { ok: boolean; result?: unknown; error?: string }
+  durationMs: number
+}
+
+/**
+ * Executes affordable tool calls with bounded concurrency and re-orders results
+ * back to call order (deterministic history for the model). Non-executable
+ * slots (budget/abort) resolve in place with a structured error.
+ */
+async function executeToolCalls(
+  slots: ToolCallSlot[],
+  executor: ToolExecutor,
+  signal: AbortSignal,
+  concurrency: number,
+): Promise<ToolExecution[]> {
+  const results: ToolExecution[] = new Array(slots.length)
+  const runnable = slots
+    .map((slot, index) => ({ slot, index }))
+    .filter((entry) => entry.slot.canUse)
+  const limit = concurrency > 1 ? concurrency : 1
+  let cursor = 0
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      const next = cursor++
+      if (next >= runnable.length) return
+      const { slot, index } = runnable[next]
+      const startedAt = Date.now()
+      const result = signal.aborted
+        ? { ok: false as const, error: 'Tool call cancelled.' }
+        : await executor.execute(slot.call.name, parseToolArguments(slot.call.arguments), signal)
+      results[index] = { name: slot.call.name, result, durationMs: Date.now() - startedAt }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(limit, runnable.length)) }, () => worker()))
+  for (let i = 0; i < slots.length; i++) {
+    if (!results[i]) {
+      results[i] = {
+        name: slots[i].call.name,
+        result: { ok: false, error: 'Tool budget reached — answer from available information.' },
+        durationMs: 0,
+      }
+    }
+  }
+  return results
+}
+
 function withinInputBudget(messages: ModelMessage[], maxInputTokens: number | undefined): ModelMessage[] {
   if (maxInputTokens === undefined) return messages
   const maxChars = Math.max(1, maxInputTokens) * 4
@@ -236,6 +326,8 @@ export interface ToolLoopRunOptions {
   delta?: (text: string) => void
   /** Runtime-only layers consumed by ContextualModelProvider. */
   context?: ModelRequest['context']
+  /** Resume a mid-loop conversation (plan §14 single-loop crash recovery). */
+  resume?: LoopCheckpoint
 }
 
 export interface ToolLoopRunResult {
@@ -268,17 +360,38 @@ export async function runToolLoop(
   const onDelta = options.delta ?? (() => {})
   const onAssistantStarted = options.assistantStarted ?? (() => {})
 
-  const messages: ModelMessage[] = [{ role: 'user', content: options.text }]
+  const messages: ModelMessage[] = options.resume
+    ? options.resume.messages.map((m) => ({ ...m }))
+    : [{ role: 'user', content: options.text }]
   const tools = config.tools ?? []
   const maxIterations = config.maxIterations ?? 4
   const maxModelCalls = config.maxModelCalls
   const maxToolCalls = config.maxToolCalls ?? 12
-  let toolCallsUsed = 0
+  let toolCallsUsed = options.resume?.toolCallsUsed ?? 0
   const textStarted = { value: false }
   let fullText = ''
-  const evidenceIds: string[] = []
+  const evidenceIds: string[] = options.resume?.evidenceIds ? [...options.resume.evidenceIds] : []
 
   activity('Requesting model response')
+
+  // Debug-only trace of the LLM approach this loop was configured with.
+  config.diagnostic?.({
+    event: 'llm.approach',
+    level: 'debug',
+    taskId: config.telemetryContext?.taskId,
+    nodeId: config.telemetryContext?.nodeId,
+    workerType: toWorkerType(config.telemetryContext?.workerType),
+    route: config.telemetryContext?.route,
+    model: config.model,
+    systemPrompt: config.system ?? DEFAULT_SYSTEM,
+    thinking: config.thinking,
+    responseFormat: config.responseFormat,
+    toolNames: tools.map((t) => t.name),
+    maxOutputTokens: config.maxOutputTokens,
+    maxIterations,
+    maxToolCalls,
+    parallelToolCalls: config.parallelToolCalls,
+  })
 
   const base = (): Omit<ModelRequest, 'messages'> => ({
     model: config.model || 'default',
@@ -290,7 +403,7 @@ export async function runToolLoop(
     context: options.context,
   })
 
-  let modelCallsUsed = 0
+  let modelCallsUsed = options.resume?.modelCallsUsed ?? 0
   let inputTokens = 0
   let outputTokens = 0
   let retries = 0
@@ -370,25 +483,45 @@ export async function runToolLoop(
           reasoningContent: passResult.reasoningContent || undefined,
           toolCalls: passResult.toolCalls,
         })
-        for (const call of passResult.toolCalls) {
-          if (signal.aborted) break
-          activity(`Using tool: ${call.name}`)
-          const canUseTool = toolCallsUsed < maxToolCalls && (config.budgetController?.tryReserveTool() ?? true)
-          if (!canUseTool) {
+        // Reserve budget in call order (mirrors the sequential path), then run
+        // the affordable calls with bounded parallelism. Tool messages are
+        // appended back in call order for a deterministic model history.
+        const slots: ToolCallSlot[] = passResult.toolCalls.map((call) => {
+          const canUse =
+            !signal.aborted &&
+            toolCallsUsed < maxToolCalls &&
+            (config.budgetController?.tryReserveTool() ?? true)
+          toolCallsUsed++
+          if (!canUse) {
             budgetExhausted = true
             config.telemetry?.({ kind: 'budget', ...config.telemetryContext, reason: 'tool budget exhausted' })
           }
-          const startedAt = Date.now()
-          const result =
-            !canUseTool
-              ? { ok: false, error: 'Tool budget reached — answer from available information.' }
-              : await executor.execute(call.name, parseToolArguments(call.arguments), signal)
-          toolCallsUsed++
-          config.telemetry?.({ kind: 'tool', ...config.telemetryContext, tool: call.name, durationMs: Date.now() - startedAt, ok: result.ok })
-          activity(result.ok ? `Tool ${call.name} finished` : `Tool ${call.name} failed`)
+          return { call, canUse }
+        })
+        for (const slot of slots) activity(`Using tool: ${slot.call.name}`)
+        const executions = await executeToolCalls(slots, executor, signal, config.parallelToolCalls ?? 0)
+        for (let i = 0; i < slots.length; i++) {
+          const execution = executions[i]
+          const call = slots[i].call
+          config.telemetry?.({
+            kind: 'tool', ...config.telemetryContext, tool: call.name, durationMs: execution.durationMs, ok: execution.result.ok,
+          })
+          config.diagnostic?.({
+            event: 'tool.executed',
+            level: 'debug',
+            taskId: config.telemetryContext?.taskId,
+            nodeId: config.telemetryContext?.nodeId,
+            workerType: toWorkerType(config.telemetryContext?.workerType),
+            tool: call.name,
+            toolArgs: parseToolArguments(call.arguments),
+            toolOutput: execution.result.ok ? execution.result.result : { error: execution.result.error },
+            ok: execution.result.ok,
+            durationMs: execution.durationMs,
+          })
+          activity(execution.result.ok ? `Tool ${call.name} finished` : `Tool ${call.name} failed`)
           let resultEvidenceIds: string[] = []
-          if (result.ok && config.recordEvidence) {
-            const payload = result.result as
+          if (execution.result.ok && config.recordEvidence) {
+            const payload = execution.result.result as
               | { evidenceCandidates?: unknown; repositoryVersion?: unknown }
               | undefined
             if (payload && Array.isArray(payload.evidenceCandidates) && payload.evidenceCandidates.length > 0) {
@@ -404,13 +537,19 @@ export async function runToolLoop(
           }
           messages.push({
             role: 'tool',
-            content: result.ok
-              ? `${JSON.stringify(result.result)}${evidenceHandleContext(resultEvidenceIds)}`
-              : `Tool error: ${result.error ?? 'unknown'}`,
+            content: execution.result.ok
+              ? `${JSON.stringify(execution.result.result)}${evidenceHandleContext(resultEvidenceIds)}`
+              : `Tool error: ${execution.result.error ?? 'unknown'}`,
             toolCallId: call.id,
             name: call.name,
           })
         }
+        config.onLoopCheckpoint?.({
+          messages: messages.map((m) => ({ ...m, toolCalls: m.role === 'assistant' ? m.toolCalls?.map((c) => ({ ...c })) : undefined })),
+          toolCallsUsed,
+          modelCallsUsed,
+          evidenceIds: [...evidenceIds],
+        })
         needsSynthesis = true
       }
 

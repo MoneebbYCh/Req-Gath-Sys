@@ -34,11 +34,14 @@ export class TaskBudgetController {
   tryReserveModel(inputTokens: number, maxOutputTokens: number): BudgetReservation | null {
     const input = Math.max(0, Math.ceil(inputTokens))
     const output = Math.max(0, Math.ceil(maxOutputTokens))
-    if (
-      this.usage.modelCalls >= this.budget.maxModelCalls ||
-      this.usage.inputTokens + input > this.budget.maxInputTokens ||
-      this.usage.outputTokens + output > this.budget.maxOutputTokens
-    ) return null
+    // Gate model calls on the call-count ceiling ONLY. Per-call input and
+    // output are bounded elsewhere: `withinInputBudget` truncates each request
+    // to the node's maxInputTokens, and the provider's max_tokens caps each
+    // response. Gating on cumulative input/output double-counts a growing
+    // message history and starves later graph nodes (a document node runs
+    // after the analysis nodes and would otherwise find the shared token
+    // budget already exhausted). Tokens stay tracked for cost telemetry.
+    if (this.usage.modelCalls >= this.budget.maxModelCalls) return null
     this.usage.modelCalls++
     this.usage.inputTokens += input
     this.usage.outputTokens += output
@@ -88,7 +91,7 @@ export interface TaskTelemetryEvent {
   reason?: string
   concurrency?: number
   /** Content-free document-structure diagnostics. */
-  documentEvent?: 'section_parse_attempt' | 'section_fallback' | 'section_fallback_checkpointed'
+  documentEvent?: 'section_parse_attempt' | 'section_fallback' | 'section_fallback_checkpointed' | 'mermaid_parse_attempt' | 'mermaid_fallback'
   documentOperation?: 'generate' | 'regenerate' | 'createDocument' | 'checkpointDocument' | 'loadDocumentIR'
   sectionIndex?: number
   attempt?: 1 | 2

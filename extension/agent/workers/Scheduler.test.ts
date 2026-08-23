@@ -88,6 +88,11 @@ describe('Scheduler', () => {
     expect(store.all().every((n) => n.status === 'completed')).toBe(true)
   })
 
+  it('exposes the sum of per-type limits as the task concurrency ceiling', () => {
+    expect(new Scheduler().maxConcurrency()).toBe(8) // repository 2 + analysis 2 + document 2 + validation 2
+    expect(new Scheduler({ limits: { document: 1 } }).maxConcurrency()).toBe(7)
+  })
+
   it('runs dependency chains in order', async () => {
     const order: string[] = []
     const store = graph([

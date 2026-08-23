@@ -1,6 +1,6 @@
 import { useEffect, useId, useState } from 'react'
 import mermaid from 'mermaid'
-import { sanitizeMermaidLabels } from '../../utils/mermaidSanitize'
+import { sanitizeMermaidLabels } from '../../../shared/mermaidSanitize'
 
 let mermaidReady = false
 

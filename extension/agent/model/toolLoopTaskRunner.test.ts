@@ -5,6 +5,7 @@ import type { ModelProvider } from './ModelProvider'
 import type { ModelRequest } from './ModelTypes'
 import { ProviderError } from './ProviderError'
 import { toolLoopTaskRunner, type ToolExecutor } from './toolLoopTaskRunner'
+import type { OperationalDiagnostic } from '../observability/OperationalLogger'
 
 /**
  * Scripted provider: requests a tool on the first pass, answers once a tool
@@ -371,6 +372,37 @@ describe('toolLoopTaskRunner', () => {
       .filter((e): e is Extract<AgentEvent, { type: 'agentAssistantDelta' }> => e.type === 'agentAssistantDelta')
       .map((e) => e.text)
     expect(deltas.join('')).toBe('final synthesis')
+  })
+
+  it('emits debug trace diagnostics for LLM approach and tool execution', async () => {
+    const diagnostics: OperationalDiagnostic[] = []
+    const executor: ToolExecutor = {
+      execute: async () => ({ ok: true, result: { matches: [{ path: 'src/auth.ts', line: 2 }] } }),
+    }
+    const runtime = new AgentRuntime(
+      toolLoopTaskRunner(toolThenAnswer, executor, {
+        model: 'trace-model',
+        system: 'Trace system prompt',
+        thinking: 'enabled',
+        tools: [{ name: 'search_code', description: 'x', inputJsonSchema: {} }],
+        diagnostic: (d) => diagnostics.push(d),
+      }),
+    )
+    collect(runtime)
+    runtime.start({ requestId: 'trace', text: 'Where is auth?', surface: { page: 'home' } })
+    await tick(20)
+
+    const approach = diagnostics.find((d) => d.event === 'llm.approach')
+    expect(approach).toMatchObject({
+      model: 'trace-model',
+      systemPrompt: 'Trace system prompt',
+      thinking: 'enabled',
+      toolNames: ['search_code'],
+    })
+
+    const executed = diagnostics.find((d) => d.event === 'tool.executed')
+    expect(executed).toMatchObject({ tool: 'search_code', toolArgs: { pattern: 'auth' } })
+    expect(executed?.toolOutput).toEqual({ matches: [{ path: 'src/auth.ts', line: 2 }] })
   })
 
   it('rebuilds context and retries once when the window overflows (plan §14)', async () => {

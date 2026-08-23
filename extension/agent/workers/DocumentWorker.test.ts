@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { DocumentWorker } from './DocumentWorker'
 import type { DocumentGateway, CheckpointResult, CreatedDocType } from './DocumentGateway'
 import { FindingStore } from '../knowledge/FindingStore'
@@ -320,6 +320,81 @@ describe('DocumentWorker', () => {
     ])
   })
 
+  it('accepts valid kpiGrid and stakeholderTable blocks (rich shapes)', async () => {
+    const checkpoints: DocumentIR[] = []
+    const provider: ModelProvider = {
+      async *stream(request) {
+        const isOutline = request.messages[0]?.content.includes('Outline the')
+        yield {
+          type: 'text_delta',
+          text: isOutline
+            ? '{"sections":[{"heading":"Plan"}]}'
+            : '{"blocks":[{"type":"kpiGrid","items":[{"metric":"Uptime","target":"99.9%","method":"SLA dashboards"}]},{"type":"stakeholderTable","rows":[{"nameRole":"Eng lead","interest":"H","influence":"M","concern":"scope creep"}]}]}',
+        }
+        yield { type: 'finish', reason: 'stop' }
+      },
+    }
+    const worker = new DocumentWorker({
+      provider,
+      baseConfig: { model: 'test' },
+      findings: new FindingStore(),
+      facts: new ProjectFactBase(),
+      gateway: gateway(checkpoints),
+    })
+    await worker.run(node(), ctx().ctx)
+    expect(checkpoints).toHaveLength(1)
+    expect(checkpoints[0].sections[0].blocks).toEqual([
+      { type: 'kpiGrid', items: [{ metric: 'Uptime', target: '99.9%', method: 'SLA dashboards' }] },
+      { type: 'stakeholderTable', rows: [{ nameRole: 'Eng lead', interest: 'H', influence: 'M', concern: 'scope creep' }] },
+    ])
+  })
+
+  it('salvages a section when one block is invalid (keeps valid, coerces bad to callout)', async () => {
+    const checkpoints: DocumentIR[] = []
+    const provider: ModelProvider = {
+      async *stream(request) {
+        const isOutline = request.messages[0]?.content.includes('Outline the')
+        yield {
+          type: 'text_delta',
+          text: isOutline
+            ? '{"sections":[{"heading":"Components"}]}'
+            : '{"blocks":[{"type":"paragraph","text":"valid frontend note"},{"type":"kpiGrid","items":[{"kpi":"wrong-field"}]}]}',
+        }
+        yield { type: 'finish', reason: 'stop' }
+      },
+    }
+    const worker = new DocumentWorker({
+      provider,
+      baseConfig: { model: 'test' },
+      findings: new FindingStore(),
+      facts: new ProjectFactBase(),
+      gateway: gateway(checkpoints),
+    })
+    await worker.run(node(), ctx().ctx)
+    expect(checkpoints).toHaveLength(1)
+    const blocks = checkpoints[0].sections[0].blocks
+    expect(blocks).toHaveLength(2)
+    expect(blocks[0]).toEqual({ type: 'paragraph', text: 'valid frontend note' })
+    expect(blocks[1]).toMatchObject({ type: 'callout', variant: 'warn', title: 'Unsupported content' })
+  })
+
+  it('spells out the exact block shapes in section prompts', async () => {
+    const prompts: string[] = []
+    const worker = new DocumentWorker({
+      provider: scriptedProvider({ prompts }),
+      baseConfig: { model: 'test' },
+      findings: new FindingStore(),
+      facts: new ProjectFactBase(),
+      gateway: gateway([]),
+    })
+    await worker.run(node(), ctx().ctx)
+    const sectionPrompt = prompts.find((p) => !p.includes('Outline the'))!
+    expect(sectionPrompt).toContain('kpiGrid')
+    expect(sectionPrompt).toContain('stakeholderTable')
+    expect(sectionPrompt).toContain('"metric"')
+    expect(sectionPrompt).toContain('"nameRole"')
+  })
+
   it('parks the draft and stops when the user edited the document mid-generation', async () => {
     const prompts: string[] = []
     const conflictGateway: DocumentGateway = {
@@ -588,5 +663,110 @@ describe('DocumentWorker', () => {
     expect(created).toBe(0)
     expect(result.completedSections).toBe(12)
     expect(events.progress.at(-1)).toMatchObject({ status: 'completed' })
+  })
+
+  it('repairs an invalid Mermaid diagram with one model pass before checkpointing', async () => {
+    const checkpoints: DocumentIR[] = []
+    const telemetry: TaskTelemetryEvent[] = []
+    let sectionCalls = 0
+    const provider: ModelProvider = {
+      async *stream(request) {
+        const content = request.messages[0]?.content ?? ''
+        if (content.includes('Outline the')) {
+          yield { type: 'text_delta', text: '{"sections":[{"heading":"Overview"},{"heading":"Facts"}]}' }
+        } else if (content.includes('syntactically invalid')) {
+          yield { type: 'text_delta', text: '{"diagrams":["flowchart TD\\n  A --> B"]}' }
+        } else {
+          sectionCalls++
+          const text = sectionCalls === 1
+            ? '{"blocks":[{"type":"mermaid","diagram":"flowchart INVALID"},{"type":"paragraph","text":"intro"}]}'
+            : '{"blocks":[{"type":"paragraph","text":"facts"}]}'
+          yield { type: 'text_delta', text }
+        }
+        yield { type: 'finish', reason: 'stop' }
+      },
+    }
+    const mermaidValidator = vi.fn(async (source: string) =>
+      source.includes('INVALID')
+        ? { ok: false, error: 'Parse error on line 1: unexpected token' }
+        : { ok: true, diagramType: 'flowchart' },
+    )
+    const worker = new DocumentWorker({
+      provider,
+      baseConfig: { model: 'test', telemetry: (event) => telemetry.push(event) },
+      findings: new FindingStore(),
+      facts: new ProjectFactBase(),
+      gateway: gateway(checkpoints),
+      mermaidValidator,
+    })
+
+    await worker.run(node(), ctx().ctx)
+
+    // One parse failure + one successful re-validation for the repaired source.
+    expect(telemetry).toContainEqual(expect.objectContaining({
+      kind: 'document',
+      documentEvent: 'mermaid_parse_attempt',
+      ok: false,
+    }))
+    expect(telemetry).toContainEqual(expect.objectContaining({
+      kind: 'document',
+      documentEvent: 'mermaid_parse_attempt',
+      ok: true,
+    }))
+    expect(checkpoints[0].sections[0].blocks).toEqual([
+      { type: 'mermaid', diagram: 'flowchart TD\n  A --> B' },
+      { type: 'paragraph', text: 'intro' },
+    ])
+  })
+
+  it('downgrades a diagram that stays invalid after repair to an editable callout', async () => {
+    const checkpoints: DocumentIR[] = []
+    const telemetry: TaskTelemetryEvent[] = []
+    let sectionCalls = 0
+    const provider: ModelProvider = {
+      async *stream(request) {
+        const content = request.messages[0]?.content ?? ''
+        if (content.includes('Outline the')) {
+          yield { type: 'text_delta', text: '{"sections":[{"heading":"Overview"}]}' }
+        } else if (content.includes('syntactically invalid')) {
+          yield { type: 'text_delta', text: '{"diagrams":["flowchart STILL INVALID"]}' }
+        } else {
+          sectionCalls++
+          if (sectionCalls === 1) {
+            yield { type: 'text_delta', text: '{"blocks":[{"type":"mermaid","diagram":"flowchart INVALID"}]}' }
+          }
+        }
+        yield { type: 'finish', reason: 'stop' }
+      },
+    }
+    const mermaidValidator = vi.fn(async (source: string) =>
+      source.includes('INVALID')
+        ? { ok: false, error: 'Parse error on line 1: unexpected token' }
+        : { ok: true, diagramType: 'flowchart' },
+    )
+    const worker = new DocumentWorker({
+      provider,
+      baseConfig: { model: 'test', telemetry: (event) => telemetry.push(event) },
+      findings: new FindingStore(),
+      facts: new ProjectFactBase(),
+      gateway: gateway(checkpoints),
+      mermaidValidator,
+    })
+
+    await worker.run(node(), ctx().ctx)
+
+    expect(telemetry).toContainEqual(expect.objectContaining({
+      kind: 'document',
+      documentEvent: 'mermaid_fallback',
+      ok: false,
+    }))
+    expect(checkpoints[0].sections[0].blocks).toEqual([
+      {
+        type: 'callout',
+        variant: 'warn',
+        title: 'Diagram needs review',
+        text: 'flowchart INVALID',
+      },
+    ])
   })
 })

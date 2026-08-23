@@ -13,4 +13,15 @@ describe('feature flags', () => {
     expect(filterModelTools(tools, resolveFeatureFlags('gate-b'))).toEqual([{ name: 'search_code' }])
     expect(filterModelTools(tools, resolveFeatureFlags('gate-a'))).toEqual([])
   })
+
+  it('gates the single-loop runner and its parallel-tool dependency', () => {
+    expect(resolveFeatureFlags('full')).toMatchObject({ singleLoop: true, parallelToolCalls: true })
+    // Early shells keep the legacy two-path orchestrator.
+    expect(resolveFeatureFlags('gate-a')).toMatchObject({ singleLoop: false, parallelToolCalls: false })
+    expect(resolveFeatureFlags('gate-b')).toMatchObject({ singleLoop: false, parallelToolCalls: false })
+    // Disabling the single loop cascades parallel tools off.
+    expect(resolveFeatureFlags('full', { singleLoop: false })).toMatchObject({ singleLoop: false, parallelToolCalls: false })
+    // Disabling streaming removes the single loop too.
+    expect(resolveFeatureFlags('full', { streaming: false })).toMatchObject({ singleLoop: false, parallelToolCalls: false })
+  })
 })

@@ -8,6 +8,8 @@ import type { ModelProvider } from '../model/ModelProvider'
 import type { ModelInvocationContext } from '../model/ModelTypes'
 import type { TaskBudgetController, TaskTelemetryEvent } from '../observability/TaskControls'
 import { irBlockSchema, documentIrSchema, type DocumentIR, type IRBlock } from '../../documents/DocumentIR'
+import { sanitizeBlockList } from '../../documents/blockSanitize'
+import { createMermaidValidator } from '../../documents/mermaidValidate'
 import type { DocumentGateway } from './DocumentGateway'
 import type { DocumentProgressState } from '../../../shared/agentProtocol'
 
@@ -28,6 +30,8 @@ export interface DocumentWorkerDeps {
   gateway: DocumentGateway
   /** Durable-state hook (plan §14): every checkpointed IR survives a restart. */
   onCheckpoint?: (documentId: string, ir: DocumentIR) => void
+  /** Injectable mermaid syntax validator (defaults to the Node mermaid parser). */
+  mermaidValidator?: (source: string) => Promise<{ ok: boolean; diagramType?: string; error?: string }>
 }
 
 export interface DocumentRunContext {
@@ -71,6 +75,29 @@ const sectionSchema = z.object({
 
 const MAX_SECTIONS = 12
 
+/** Repair pass: corrected mermaid sources, one per failing diagram, in order. */
+const mermaidRepairSchema = z.object({ diagrams: z.array(z.string().max(10_000)) })
+
+/** Block vocabulary the model may emit, plus guidance to prefer rich shapes. */
+const BLOCK_SCHEMA_HINT =
+  '\n\nEmit each block using EXACTLY one of these shapes (no other field names):\n' +
+  '- paragraph: {"type":"paragraph","text":"..."}\n' +
+  '- bullets: {"type":"bullets","items":["..."]}\n' +
+  '- numbered: {"type":"numbered","items":["..."]}\n' +
+  '- table: {"type":"table","header":["Col"],"rows":[["val"]]}\n' +
+  '- callout: {"type":"callout","text":"...","variant":"info|warn|success|error","title":"..."}\n' +
+  '- mermaid: {"type":"mermaid","diagram":"flowchart TD\\n  A --> B","title":"..."}\n' +
+  '- risk: {"type":"risk","rows":[{"risk":"...","likelihood":"H|M|L","impact":"H|M|L","mitigation":"..."}]}\n' +
+  '- scope: {"type":"scope","inScope":["..."],"outOfScope":["..."]}\n' +
+  '- kpiGrid: {"type":"kpiGrid","items":[{"metric":"...","target":"...","method":"..."}]}\n' +
+  '- stakeholderTable: {"type":"stakeholderTable","rows":[{"nameRole":"...","interest":"H|M|L","influence":"H|M|L","concern":"..."}]}\n' +
+  'Rules: a mermaid "diagram" must be a single-line string using \\n escapes (never raw newlines). ' +
+  'Start it with a supported diagram type: flowchart (or graph TD/LR), sequenceDiagram, classDiagram, ' +
+  'stateDiagram-v2, erDiagram, gantt, pie, journey, mindmap, timeline, quadrantChart, or gitGraph. ' +
+  'Quote any node/edge label containing { } < > | # ; or /. ' +
+  'Prefer rich blocks where they fit: a callout for caveats, a risk block for risks, a kpiGrid for measurable goals, ' +
+  'a stakeholderTable for roles, and a mermaid block for architecture or flow diagrams.'
+
 type SectionParseOutcome = 'valid' | 'empty' | 'markdown' | 'malformed_json' | 'schema_mismatch'
 
 interface SectionParseResult {
@@ -84,8 +111,34 @@ interface SectionParseResult {
 function parseSectionText(text: string): SectionParseResult {
   const raw = extractJsonBlock(text)
   if (raw !== undefined) {
+    // Deterministic block sanitation first: common LLM deviations (variant
+    // aliases, ragged tables, fence-wrapped diagrams, empty items) are coerced
+    // here instead of reaching the salvage path or a section retry. Hopeless
+    // blocks become editable warn callouts — nothing is silently dropped.
+    const sanitized = sanitizeBlockList(raw)
+    if (sanitized) {
+      return {
+        blocks: sanitized.blocks,
+        outcome: 'valid',
+        jsonExtracted: true,
+        ...(sanitized.coerced > 0 ? { schemaIssueCount: sanitized.coerced, schemaIssueCodes: ['sanitized'] } : {}),
+      }
+    }
     const parsed = sectionSchema.safeParse(raw)
     if (parsed.success) return { blocks: parsed.data.blocks, outcome: 'valid', jsonExtracted: true }
+    // Whole-section validation failed — salvage the blocks that ARE valid and
+    // coerce the rest into editable callouts, so one bad block never wipes a
+    // section (or lands in the "needs review" placeholder).
+    const salvaged = salvageBlocks(raw)
+    if (salvaged) {
+      return {
+        blocks: salvaged,
+        outcome: 'valid',
+        jsonExtracted: true,
+        schemaIssueCount: parsed.error.issues.length,
+        schemaIssueCodes: [...new Set(parsed.error.issues.map((issue) => issue.code))].slice(0, 4),
+      }
+    }
     const schemaIssueCodes = [...new Set(parsed.error.issues.map((issue) => issue.code))].slice(0, 4)
     return {
       blocks: null,
@@ -103,6 +156,35 @@ function parseSectionText(text: string): SectionParseResult {
   return blocks
     ? { blocks, outcome: 'markdown', jsonExtracted: false }
     : { blocks: null, outcome: 'malformed_json', jsonExtracted: false }
+}
+
+/**
+ * Keep the blocks that validate; turn each invalid block into an editable warn
+ * callout containing the raw model output (nothing is silently dropped). Returns
+ * null when NO block was salvageable — the caller then retries.
+ */
+function salvageBlocks(raw: unknown): IRBlock[] | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
+  const blocks = (raw as { blocks?: unknown }).blocks
+  if (!Array.isArray(blocks) || blocks.length === 0) return null
+  const salvaged: IRBlock[] = []
+  let kept = 0
+  for (const block of blocks) {
+    const parsed = irBlockSchema.safeParse(block)
+    if (parsed.success) {
+      salvaged.push(parsed.data)
+      kept++
+    } else {
+      const text = typeof block === 'string' ? block : JSON.stringify(block)
+      salvaged.push({
+        type: 'callout',
+        variant: 'warn',
+        title: 'Unsupported content',
+        text: (text ?? '').slice(0, 2_000) || 'Empty block.',
+      })
+    }
+  }
+  return kept > 0 ? salvaged : null
 }
 
 /**
@@ -178,6 +260,14 @@ function blocksText(blocks: IRBlock[]): string {
           return `In scope: ${b.inScope.join(', ')}\nOut of scope: ${b.outOfScope.join(', ')}`
         case 'mermaid':
           return b.title ?? 'Diagram'
+        case 'kpiGrid':
+          return b.items
+            .map((i) => `KPI: ${i.metric}${i.target ? ` — target: ${i.target}` : ''}${i.method ? ` — method: ${i.method}` : ''}`)
+            .join('\n')
+        case 'stakeholderTable':
+          return b.rows
+            .map((r) => `${r.nameRole}${r.interest ? ` — interest: ${r.interest}` : ''}${r.influence ? ` — influence: ${r.influence}` : ''}${r.concern ? ` — concern: ${r.concern}` : ''}`)
+            .join('\n')
       }
     })
     .join('\n')
@@ -239,7 +329,11 @@ async function modelJson(
 }
 
 export class DocumentWorker {
-  constructor(private readonly deps: DocumentWorkerDeps) {}
+  private readonly mermaidValidator: (source: string) => Promise<{ ok: boolean; diagramType?: string; error?: string }>
+
+  constructor(private readonly deps: DocumentWorkerDeps) {
+    this.mermaidValidator = deps.mermaidValidator ?? createMermaidValidator()
+  }
 
   async run(node: TaskNode, ctx: DocumentRunContext): Promise<DocumentRunResult> {
     const scopedContext: DocumentRunContext = {
@@ -452,8 +546,7 @@ export class DocumentWorker {
         config,
         `Write section "${heading}" (${i + 1}/${total}) of the "${title}" document. ` +
           `Ground every factual statement in the established facts; clearly flag anything proposed. ` +
-          `Respond with ONLY a JSON block: {"blocks":[...]} using block types: ` +
-          `paragraph, bullets, numbered, table, callout, mermaid, risk, scope.\n\n` +
+          `Respond with ONLY a JSON block: {"blocks":[...]}.${BLOCK_SCHEMA_HINT}\n\n` +
           `Established facts (your section MUST agree with these):\n${factsSummary(this.deps.findings, this.deps.facts)}`,
         `You write technical documentation sections. Output ONLY valid JSON.`,
         ctx.signal,
@@ -463,7 +556,12 @@ export class DocumentWorker {
 
       const parsedSection = await this.parseSection(sectionText, ctx, 'generate', i)
       const usedFallback = !parsedSection.blocks
-      const blocks = parsedSection.blocks ?? this.invalidSectionFallback(ctx, parsedSection.outcome, 'generate', i)
+      const blocks = await this.ensureValidMermaid(
+        ctx,
+        parsedSection.blocks ?? this.invalidSectionFallback(ctx, parsedSection.outcome, 'generate', i),
+        'generate',
+        i,
+      )
 
       ir.sections[i] = { heading, blocks }
       const validated = documentIrSchema.parse(ir)
@@ -593,7 +691,7 @@ export class DocumentWorker {
         `Rewrite ONLY the section "${section.heading}" of the "${title}" document. ` +
           `Validation feedback you must address: ${node.objective}\n` +
           `Ground every factual statement in the established facts; keep claims that were validated as supported. ` +
-          `Respond with ONLY a JSON block: {"blocks":[...]} using block types: paragraph, bullets, numbered, table, callout, mermaid, risk, scope.\n\n` +
+          `Respond with ONLY a JSON block: {"blocks":[...]}.${BLOCK_SCHEMA_HINT}\n\n` +
           `Established facts (your section MUST agree with these):\n${factsSummary(this.deps.findings, this.deps.facts)}`,
         `You fix technical documentation sections. Output ONLY valid JSON.`,
         ctx.signal,
@@ -603,7 +701,12 @@ export class DocumentWorker {
 
       const parsedSection = await this.parseSection(sectionText, ctx, 'regenerate', i)
       const usedFallback = !parsedSection.blocks
-      const blocks = parsedSection.blocks ?? this.invalidSectionFallback(ctx, parsedSection.outcome, 'regenerate', i)
+      const blocks = await this.ensureValidMermaid(
+        ctx,
+        parsedSection.blocks ?? this.invalidSectionFallback(ctx, parsedSection.outcome, 'regenerate', i),
+        'regenerate',
+        i,
+      )
       ir.sections[i] = { heading: section.heading, blocks }
       const validated = documentIrSchema.parse(ir)
 
@@ -757,6 +860,104 @@ export class DocumentWorker {
         text: 'The AI could not produce this section in the required editable document format after two attempts. Add or regenerate the section content here.',
       },
     ]
+  }
+
+  /**
+   * Every model-emitted mermaid block is syntax-validated before checkpoint.
+   * One bounded repair pass feeds the exact parse error back to the model;
+   * diagrams that still fail are downgraded to an editable warn callout —
+   * nothing is silently dropped (same philosophy as the section salvage).
+   */
+  private async ensureValidMermaid(
+    ctx: DocumentRunContext,
+    blocks: IRBlock[],
+    documentOperation: 'generate' | 'regenerate',
+    sectionIndex: number,
+  ): Promise<IRBlock[]> {
+    const failing: Array<{ index: number; diagram: string; error?: string }> = []
+    for (let i = 0; i < blocks.length; i++) {
+      const block = blocks[i]
+      if (block.type !== 'mermaid') continue
+      const result = await this.mermaidValidator(block.diagram)
+      this.documentDiagnostic(ctx, {
+        documentEvent: 'mermaid_parse_attempt',
+        documentOperation,
+        sectionIndex,
+        ok: result.ok,
+      })
+      if (!result.ok) failing.push({ index: i, diagram: block.diagram, error: result.error })
+    }
+    if (failing.length === 0) return blocks
+
+    ctx.activity('Fixing invalid Mermaid diagram syntax')
+    const repairs = await this.repairMermaid(ctx, failing)
+    const out = [...blocks]
+    for (const entry of failing) {
+      const candidate = repairs?.get(entry.index) ?? entry.diagram
+      const check = await this.mermaidValidator(candidate)
+      this.documentDiagnostic(ctx, {
+        documentEvent: 'mermaid_parse_attempt',
+        documentOperation,
+        sectionIndex,
+        ok: check.ok,
+      })
+      if (check.ok) {
+        const block = out[entry.index]
+        if (block.type === 'mermaid') out[entry.index] = { ...block, diagram: candidate }
+      } else {
+        this.documentDiagnostic(ctx, {
+          documentEvent: 'mermaid_fallback',
+          documentOperation,
+          sectionIndex,
+          ok: false,
+        })
+        out[entry.index] = {
+          type: 'callout',
+          variant: 'warn',
+          title: 'Diagram needs review',
+          text: entry.diagram.slice(0, 2_000),
+        }
+      }
+    }
+    return out
+  }
+
+  /** One model pass that returns corrected diagrams 1:1 with the failures. */
+  private async repairMermaid(
+    ctx: DocumentRunContext,
+    failing: Array<{ index: number; diagram: string; error?: string }>,
+  ): Promise<Map<number, string> | null> {
+    try {
+      const prompt =
+        'Some Mermaid diagrams in the document are syntactically invalid. Return ONLY a JSON object ' +
+        '{"diagrams":["...","..."]} with the corrected source for each diagram, in the same order. ' +
+        'Use \\n escapes inside each diagram string. No fences, no other text.\n\n' +
+        failing
+          .map((f, i) => `Diagram ${i + 1} (error: ${f.error ?? 'invalid syntax'}):\n${f.diagram}`)
+          .join('\n\n')
+      const text = await modelJson(
+        this.deps.provider,
+        ctx.loopConfig ?? this.deps.baseConfig,
+        prompt,
+        'You fix Mermaid diagram syntax. Output ONLY valid JSON.',
+        ctx.signal,
+        ctx.activity,
+        ctx.modelContext,
+      )
+      const raw = extractJsonBlock(text)
+      const parsed = raw === undefined ? undefined : mermaidRepairSchema.safeParse(raw)
+      if (!parsed?.success) return null
+      const map = new Map<number, string>()
+      failing.forEach((f, i) => {
+        const fixed = parsed.data.diagrams[i]
+        if (fixed) map.set(f.index, fixed)
+      })
+      return map.size > 0 ? map : null
+    } catch {
+      // Budget exhaustion or a provider failure must not kill the section —
+      // the invalid diagrams fall back to editable callouts below.
+      return null
+    }
   }
 
   private documentDiagnostic(

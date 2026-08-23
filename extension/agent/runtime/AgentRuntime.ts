@@ -6,6 +6,7 @@ import type {
   PlanView,
 } from '../../../shared/agentProtocol'
 import type { TaskNode } from '../contracts/TaskGraph'
+import type { LoopState } from '../state/PersistedState'
 
 /** Live view of a task — the executor reads it, the runtime updates it. */
 export interface AgentTaskHandle {
@@ -199,6 +200,8 @@ export interface TaskResumePayload {
   graph?: TaskNode[]
   /** Completed-node outputs (dependency inputs) restored from durable state. */
   outputs?: Record<string, string[]>
+  /** Mid-loop conversation for single-loop tasks (plan §14). */
+  loopState?: LoopState
 }
 
 /** Executes the actual task work (ReAct loop, analysis, …). */

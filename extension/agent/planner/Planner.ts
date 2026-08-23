@@ -253,24 +253,37 @@ export class Planner {
     const count = countMatch
       ? Math.max(1, Math.min(10, WORD_COUNTS[rawCount] ?? (Number(rawCount) || 1)))
       : 1
+    const titles = countMatch
+      ? DEFAULT_DOCUMENTS.slice(0, count)
+      : [this.domainDocumentTitle(text)]
+    return this.planDocumentsWithTitles(text, titles)
+  }
 
+  /**
+   * Plan a document set from explicit, model-supplied titles — no keyword
+   * guessing. Used by the single-loop `create_document` tool, where the model
+   * already understands the request and names the exact deliverables.
+   */
+  public planDocumentsByTitle(text: string, titles: string[]): TaskNode[] {
+    const cleaned = [...new Set(titles.map((t) => t.trim()).filter((t) => t.length > 0))].slice(0, 10)
+    return this.planDocumentsWithTitles(text, cleaned.length > 0 ? cleaned : ['Project Overview'])
+  }
+
+  private domainDocumentTitle(text: string): string {
+    const matched = this.playbooks.filter((playbook) => playbook.keywords.test(text))
+    const domain = matched.find((playbook) => playbook.domain !== 'architecture')?.domain
+      ?? matched[0]?.domain
+    return DOMAIN_DOCUMENTS[domain ?? ''] ?? 'Project Overview'
+  }
+
+  private planDocumentsWithTitles(text: string, titles: string[]): TaskNode[] {
     // Reserve graph capacity before planning analysis. Otherwise a request
     // that matches several domains can consume the node cap and silently
     // eliminate the document and validation nodes it explicitly requested.
-    const reservedDeliverableNodes = count * 2 + (count > 1 ? 1 : 0)
+    const reservedDeliverableNodes = titles.length * 2 + (titles.length > 1 ? 1 : 0)
     const analysis = this
       .plan(text.replace(DOC_REQUEST, 'analyze the repository'))
       .slice(0, Math.max(0, this.maxNodes - reservedDeliverableNodes))
-
-    const titles: string[] = []
-    if (countMatch) {
-      titles.push(...DEFAULT_DOCUMENTS.slice(0, count))
-    } else {
-      const matched = this.playbooks.filter((playbook) => playbook.keywords.test(text))
-      const domain = matched.find((playbook) => playbook.domain !== 'architecture')?.domain
-        ?? matched[0]?.domain
-      titles.push(DOMAIN_DOCUMENTS[domain ?? ''] ?? 'Project Overview')
-    }
 
     const analysisIds = analysis.map((n) => n.id)
     // Each document costs a doc node + a validation node; multi-doc adds one

@@ -71,6 +71,34 @@ describe('DocumentRenderer', () => {
     })
   })
 
+  it('renders kpiGrid and stakeholderTable blocks in canonical prop shapes', () => {
+    const canvas = renderDocument(
+      ir([
+        {
+          heading: 'Plan',
+          blocks: [
+            {
+              type: 'kpiGrid',
+              items: [{ metric: 'Uptime', target: '99.9%', method: 'SLA dashboards' }],
+            },
+            {
+              type: 'stakeholderTable',
+              rows: [{ nameRole: 'Eng lead', interest: 'H', influence: 'M', concern: 'scope creep' }],
+            },
+          ],
+        },
+      ]),
+    )
+    expect(canvas.blocks).toContainEqual({
+      type: 'kpiGrid',
+      props: { itemsJson: JSON.stringify([{ metric: 'Uptime', target: '99.9%', method: 'SLA dashboards' }]) },
+    })
+    expect(canvas.blocks).toContainEqual({
+      type: 'stakeholderTable',
+      props: { rowsJson: JSON.stringify([{ nameRole: 'Eng lead', interest: 'H', influence: 'M', concern: 'scope creep' }]) },
+    })
+  })
+
   it('renders empty documents as a single empty paragraph (always a valid canvas)', () => {
     const canvas = renderDocument({ title: '', sections: [] })
     expect(canvas.blocks).toEqual([{ type: 'paragraph', content: '' }])

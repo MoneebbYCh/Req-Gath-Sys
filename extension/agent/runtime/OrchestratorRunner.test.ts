@@ -40,7 +40,7 @@ describe('orchestratorRunner', () => {
 
     expect(budget.maxModelCalls).toBe(nodes.reduce((total, node) => total + node.budget.maxModelCalls, 0))
     expect(budget.maxToolCalls).toBe(nodes.reduce((total, node) => total + node.budget.maxToolCalls, 0))
-    expect(budget.maxParallelWorkers).toBe(Math.min(...nodes.map((node) => node.budget.maxParallelWorkers)))
+    expect(budget.maxParallelWorkers).toBe(nodes.reduce((total, node) => total + node.budget.maxParallelWorkers, 0))
   })
 
   it('routes simple requests to the fast path without a plan', async () => {
@@ -228,6 +228,35 @@ describe('orchestratorRunner', () => {
       .map((e) => e.text)
     expect(deltas).toEqual([])
     expect(events.at(-1)).toMatchObject({ type: 'agentTaskCompleted' })
+  })
+
+  it('runs independent document nodes concurrently (not serialized by per-node budgets)', async () => {
+    const active = { current: 0, max: 0 }
+    const documentRuns: string[] = []
+    const runtime = new AgentRuntime(
+      orchestratorRunner({
+        simpleRunner: simpleMarker([]),
+        runNode: async (node) => {
+          if (node.roleSpec.workerType === 'document') {
+            documentRuns.push(node.title)
+            active.current++
+            active.max = Math.max(active.max, active.current)
+            await tick(10)
+            active.current--
+          }
+          return [`output-${node.title}`]
+        },
+      }),
+    )
+    runtime.start({
+      requestId: 'parallel-docs',
+      text: 'Create 2 documents: PRD and System Architecture for this repository.',
+      surface: { page: 'home' },
+    })
+    await tick(60)
+
+    expect(documentRuns).toHaveLength(2)
+    expect(active.max).toBe(2) // both document nodes overlapped
   })
 
   it('preserves partial success when a node fails (US-8.3)', async () => {
