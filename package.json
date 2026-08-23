@@ -1,0 +1,135 @@
+{
+  "name": "charter-ai",
+  "displayName": "Charter Ai",
+  "description": "Charter Ai — AI-assisted requirements pipeline (Charter → PRD → System Design → Dev → QA → Post Dev)",
+  "version": "1.0.0",
+  "publisher": "charter-ai",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "vscode": "^1.96.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [],
+  "main": "./out/extension.cjs",
+  "contributes": {
+    "commands": [
+      {
+        "command": "charter-ai.openPipeline",
+        "title": "Charter Ai: Open Pipeline"
+      },
+      {
+        "command": "charter-ai.initializeWorkspace",
+        "title": "Charter Ai: Initialize Workspace"
+      },
+      {
+        "command": "charter-ai.setProviderKey",
+        "title": "Charter Ai: Set Provider API Key"
+      },
+      {
+        "command": "charter-ai.showAgentDiagnostics",
+        "title": "Charter Ai: Show Agent Diagnostics"
+      }
+    ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "charter-ai.openPipeline"
+        },
+        {
+          "command": "charter-ai.initializeWorkspace"
+        },
+        {
+          "command": "charter-ai.setProviderKey"
+        },
+        {
+          "command": "charter-ai.showAgentDiagnostics"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Charter Ai",
+      "properties": {
+        "charterAi.provider": {
+          "type": "string",
+          "enum": [
+            "deepseek"
+          ],
+          "default": "deepseek",
+          "markdownDescription": "Charter Ai currently uses the DeepSeek API. Set your key in Profile → DeepSeek, or run `Charter Ai: Set Provider API Key`."
+        },
+        "charterAi.model": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "DeepSeek model name to request. Empty uses `deepseek-v4-pro`."
+        },
+        "charterAi.rolloutStage": {
+          "type": "string",
+          "enum": ["gate-a", "gate-b", "gate-c", "gate-d", "gate-e", "full"],
+          "default": "full",
+          "markdownDescription": "Development rollout stage for CharterAI agent capabilities. `full` enables every implemented capability; featureFlags can disable individual capabilities for a controlled rollout."
+        },
+        "charterAi.featureFlags": {
+          "type": "object",
+          "default": {},
+          "markdownDescription": "Development-only overrides for independently switchable agent capabilities. Invalid dependency combinations are disabled safely by the extension."
+        },
+        "charterAi.diagnosticsLevel": {
+          "type": "string",
+          "enum": ["debug", "info", "warn", "error"],
+          "default": "info",
+          "markdownDescription": "Minimum severity written to the CharterAI Agent Diagnostics output channel. Diagnostics contain safe operational metadata only; prompts, source code, tool payloads, and credentials are excluded."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "dev": "vite",
+    "build:webview": "vite build",
+    "build:extension": "esbuild extension/extension.ts --bundle --outfile=out/extension.cjs --external:vscode --external:mermaid --external:@vscode/ripgrep --format=cjs --platform=node --tsconfig=tsconfig.extension.json",
+    "build:worker": "esbuild extension/agent-worker/worker.ts --bundle --outfile=out/agent-worker.cjs --format=cjs --platform=node --tsconfig=tsconfig.extension.json",
+    "build": "npm run build:extension && npm run build:worker && npm run build:webview",
+    "test": "vitest run",
+    "evaluate": "vitest run extension/agent/eval extension/agent/rollout",
+    "typecheck": "tsc -b tsconfig.json && tsc --noEmit -p tsconfig.extension.json",
+    "lint": "eslint .",
+    "preview": "vite preview",
+    "vscode:prepublish": "npm run build"
+  },
+  "dependencies": {
+    "@blocknote/core": "^0.52.1",
+    "@blocknote/mantine": "^0.52.1",
+    "@blocknote/react": "^0.52.1",
+    "@mantine/core": "^9.4.2",
+    "@mantine/hooks": "^9.4.2",
+    "@vscode/ripgrep": "^1.18.0",
+    "fast-glob": "^3.3.3",
+    "mermaid": "^11.16.0",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@tailwindcss/vite": "^4.3.0",
+    "@testing-library/react": "^16.3.2",
+    "@types/node": "^24.12.3",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@types/vscode": "^1.125.0",
+    "@vitejs/plugin-react": "^6.0.1",
+    "esbuild": "^0.28.0",
+    "eslint": "^10.3.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "eslint-plugin-react-refresh": "^0.5.2",
+    "globals": "^17.6.0",
+    "jsdom": "^29.1.1",
+    "tailwindcss": "^4.3.0",
+    "typescript": "~6.0.2",
+    "typescript-eslint": "^8.67.0",
+    "vite": "^8.0.12",
+    "vitest": "^4.1.10"
+  }
+}

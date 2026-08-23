@@ -1,0 +1,157 @@
+import { useViewState } from './hooks/useViewState'
+import { HomePage } from './pages/HomePage'
+import { ProfilePage } from './pages/ProfilePage'
+import { PhaseCanvasPage } from './pages/PhaseCanvasPage'
+import { CRTMonitor } from './components/layout/CRTMonitor'
+import {
+  isDocumentTypeId,
+  applyCustomTypesFromDisk,
+} from './data/documentTypes'
+import { getVscodeApi } from './utils/vscodeApi'
+import {
+  getWorkspaceId,
+  setWorkspaceScope,
+} from './utils/workspaceScope'
+import { useAgentSession } from './hooks/useAgentSession'
+import { ChatPanel } from './components/chat/ChatPanel'
+import { ChatToggleButton } from './components/chat/ChatToggleButton'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+
+function App() {
+  const vscode = getVscodeApi()
+  // Wait until we know which folder we're in (VS Code) so localStorage is scoped first.
+  const [scopeReady, setScopeReady] = useState(!vscode)
+  const [workspaceKey, setWorkspaceKey] = useState(() => getWorkspaceId() || 'local')
+  const [noWorkspace, setNoWorkspace] = useState(false)
+
+  useEffect(() => {
+    if (!vscode) return
+    const handler = (event: MessageEvent) => {
+      const msg = event.data
+      if (msg?.type === 'workspaceInfo' && typeof msg.path === 'string') {
+        if (msg.available !== false) {
+          setWorkspaceScope(msg.path)
+          setWorkspaceKey(getWorkspaceId() || 'workspace')
+          setScopeReady(true)
+          // Load doc types for *this* folder after scope is set.
+          vscode.postMessage({ type: 'loadDocTypes' })
+        } else {
+          // No folder open — show the notice state; nothing is persisted.
+          setNoWorkspace(true)
+          setWorkspaceKey('no-workspace')
+          setScopeReady(true)
+        }
+      }
+    }
+    window.addEventListener('message', handler)
+    vscode.postMessage({ type: 'loadWorkspaceInfo' })
+    return () => window.removeEventListener('message', handler)
+  }, [vscode])
+
+  if (!scopeReady) {
+    return (
+      <CRTMonitor>
+        <div className="flex h-screen items-center justify-center text-sm text-on-surface-variant">
+          Connecting to workspace…
+        </div>
+      </CRTMonitor>
+    )
+  }
+
+  // Remount the whole app tree when the folder changes so chat + docs reset.
+  return <AppShell key={workspaceKey} noWorkspace={noWorkspace} />
+}
+
+function AppShell({ noWorkspace }: { noWorkspace: boolean }) {
+  const { view, navigate, goHome } = useViewState()
+  // The active page/document is request metadata (surface), not session identity.
+  const surface = useMemo(
+    () => ({
+      page: view.page,
+      activeDocumentId: isDocumentTypeId(view.page) ? view.page : undefined,
+    }),
+    [view.page],
+  )
+  const chat = useAgentSession(surface)
+  const [docTypesRev, setDocTypesRev] = useState(0)
+
+  useEffect(() => {
+    const handler = (event: MessageEvent) => {
+      const msg = event.data
+      if (msg?.type === 'loadDocTypes') {
+        const mode = msg.mode === 'replace' ? 'replace' : 'merge'
+        if (applyCustomTypesFromDisk(msg.data, mode) || mode === 'replace') {
+          setDocTypesRev((n) => n + 1)
+        }
+        return
+      }
+      if (msg?.type === 'navigateTo' && typeof msg.view?.page === 'string') {
+        navigate(msg.view)
+      }
+    }
+    window.addEventListener('message', handler)
+    return () => window.removeEventListener('message', handler)
+  }, [navigate])
+
+  const askFromHome = useCallback(
+    (text: string) => {
+      const trimmed = text.trim()
+      if (!trimmed) return
+      if (!chat.isOpen) chat.toggleOpen()
+      chat.send(trimmed)
+    },
+    [chat.isOpen, chat.toggleOpen, chat.send],
+  )
+
+  const renderPage = () => {
+    if (view.page === 'home') {
+      return (
+        <HomePage
+          onNavigate={navigate}
+          onAsk={askFromHome}
+          isAsking={chat.isRunning}
+          docTypesRev={docTypesRev}
+          noWorkspace={noWorkspace}
+        />
+      )
+    }
+    if (view.page === 'profile') {
+      return <ProfilePage onNavigate={navigate} goHome={goHome} />
+    }
+    if (isDocumentTypeId(view.page)) {
+      return <PhaseCanvasPage key={view.page} phaseId={view.page} onNavigate={navigate} goHome={goHome} />
+    }
+    return (
+      <HomePage
+        onNavigate={navigate}
+        onAsk={askFromHome}
+        isAsking={chat.isRunning}
+        docTypesRev={docTypesRev}
+        noWorkspace={noWorkspace}
+      />
+    )
+  }
+
+  return (
+    <CRTMonitor>
+      {renderPage()}
+      <ChatToggleButton isOpen={chat.isOpen} onClick={chat.toggleOpen} />
+      <ChatPanel
+        isOpen={chat.isOpen}
+        onClose={chat.close}
+        messages={chat.messages}
+        activities={chat.activities}
+        taskStatus={chat.taskStatus}
+        plan={chat.plan}
+        documents={chat.documents}
+        error={chat.error}
+        onSend={chat.send}
+        onCancel={chat.cancel}
+        onClear={chat.clearMessages}
+        onApplyPendingDraft={chat.applyPendingDraft}
+      />
+    </CRTMonitor>
+  )
+}
+
+export default App
