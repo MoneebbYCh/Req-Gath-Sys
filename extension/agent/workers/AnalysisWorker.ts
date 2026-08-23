@@ -11,6 +11,7 @@ import {
 } from '../model/toolLoopTaskRunner'
 import { extractJsonBlock } from '../model/jsonBlock'
 import type { ModelProvider } from '../model/ModelProvider'
+import { NAVIGATION_PLAYBOOK } from './navigationPlaybook'
 import type { TaskBudgetController } from '../observability/TaskControls'
 
 /**
@@ -93,9 +94,10 @@ function roleSystemPrompt(node: TaskNode): string {
     `Answer these questions:\n${questions}\n\n` +
     `Rules:\n` +
     `- Every claim about current implementation behavior must be grounded in repository content you actually read.\n` +
-    `- Distinguish observed facts from inference; use type "inferred"/"proposed" when you cannot prove a claim.\n` +
-    `- Tool results label evidence as [EVIDENCE:<id>]. Every observed finding MUST cite only the exact evidence ids that support it.\n` +
-    `- End your answer with ONE fenced JSON block:\n` +
+     `- Distinguish observed facts from inference; use type "inferred"/"proposed" when you cannot prove a claim.\n` +
+     `- Tool results label evidence as [EVIDENCE:<id>]. Every observed finding MUST cite only the exact evidence ids that support it.\n` +
+     `${NAVIGATION_PLAYBOOK}\n` +
+     `- End your answer with ONE fenced JSON block:\n` +
     '```json\n' +
     '{"findings":[{"claim":"...","type":"observed|inferred|proposed|unknown","domain":"...","confidence":"high|medium|low","fact_key":"optional.semantic.key","evidenceIds":["evidence-id"]}],' +
     '"unknowns":["..."],"contradictions":["..."],"coverage_achieved":["..."],"recommended_followups":["..."],"new_questions":["..."],"missing_coverage":["..."]}\n' +

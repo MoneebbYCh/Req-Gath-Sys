@@ -104,18 +104,17 @@ export function createRepositoryTools(deps: RepositoryToolDeps): Array<Repositor
   tools.push({
     name: 'list_files',
     description:
-      'Browse a directory of the workspace without returning source content. ' +
-      'Returns path metadata (kind, size, language, flags like test/vendor/generated/config) with pagination. ' +
-      'Use an empty path for the workspace top level. `root` selects a workspace folder (multi-root); ' +
-      '`pattern` filters entries by a glob-ish name pattern.',
+      'Browse the contents of one directory — names and metadata only (kind, size, language, flags like test/vendor/generated/config), never source content. ' +
+      'Use to see what exists inside a directory you already located; to find files by name anywhere in the workspace use search_files instead. ' +
+      'Results are paginated: continue with cursor=nextCursor when present.',
     inputSchema: z.object({
-      path: z.string().optional(),
+      path: z.string().optional().describe('Directory to list, workspace-root-relative (e.g. "src/server"). Omit for the workspace top level.'),
       /** @deprecated root indexes are accepted for legacy clients; use rootId. */
       root: z.number().int().min(0).optional(),
-      rootId: z.string().min(1).optional(),
-      pattern: z.string().optional(),
+      rootId: z.string().min(1).optional().describe('Workspace folder id for multi-root workspaces.'),
+      pattern: z.string().optional().describe('Filename filter where * is a wildcard, e.g. "*.test.ts".'),
       limit: z.number().int().min(1).max(500).optional(),
-      cursor: z.number().int().nonnegative().optional(),
+      cursor: z.number().int().nonnegative().optional().describe('Page token from a previous nextCursor.'),
     }),
     execute: async (input, ctx) => {
       // Multi-root scope (plan §10): `root` picks which workspace folder.
@@ -174,10 +173,11 @@ export function createRepositoryTools(deps: RepositoryToolDeps): Array<Repositor
   tools.push({
     name: 'search_files',
     description:
-      'Locate files by path/name terms. Every whitespace-separated token must appear in the file path. ' +
-      'Returns up to 50 matches; use it before reading or content-searching.',
+      'Find files by NAME anywhere in the workspace when you know part of the filename but not where it lives (e.g. "auth middleware"). ' +
+      'Every whitespace-separated token must appear somewhere in the path (AND semantics). Returns up to 50 path matches. ' +
+      'For file CONTENT use search_code; to browse a known directory use list_files.',
     inputSchema: z.object({
-      query: z.string().min(1),
+      query: z.string().min(1).describe('Space-separated name tokens, all of which must match the path.'),
       limit: z.number().int().min(1).max(100).optional(),
     }),
     execute: async (input, ctx) => {
@@ -206,15 +206,17 @@ export function createRepositoryTools(deps: RepositoryToolDeps): Array<Repositor
   tools.push({
     name: 'search_code',
     description:
-      'Regex search over workspace source (ripgrep). Returns file, line number, and the matching line ' +
-      '(truncated). Results are bounded and paginated: when truncated, pass `offset` (nextCursor) to continue.',
+      'Primary discovery tool: regex search over file CONTENT (ripgrep). Returns file, line number, and the matching line. ' +
+      'Always scope with `path` to a directory when you have one — unscoped searches over large repos waste budget on noise. ' +
+      'When the result is truncated (refineHint present), tighten the regex or scope first; only page through everything with offset=nextCursor as a last resort. ' +
+      'To find files by NAME use search_files.',
     inputSchema: z.object({
-      pattern: z.string().min(1),
-      path: z.string().optional(),
+      pattern: z.string().min(1).describe('Regular expression matched against file content, e.g. "verifyToken|checkAuth".'),
+      path: z.string().optional().describe('Directory or file to scope the search to, workspace-root-relative.'),
       root: z.number().int().min(0).optional(),
-      rootId: z.string().min(1).optional(),
+      rootId: z.string().min(1).optional().describe('Workspace folder id for multi-root workspaces.'),
       limit: z.number().int().min(1).max(500).optional(),
-      offset: z.number().int().min(0).optional(),
+      offset: z.number().int().min(0).optional().describe('Page token from a previous nextCursor.'),
     }),
     execute: async (input, ctx) => {
       let scope: string[] = deps.roots
@@ -260,9 +262,13 @@ export function createRepositoryTools(deps: RepositoryToolDeps): Array<Repositor
   tools.push({
     name: 'read_file',
     description:
-      'Read a whole source file when it is below the safe size limit (32 KB). ' +
-      'Larger files return metadata instead — use read_file_range for those. Sensitive files (.env, keys) are blocked.',
-    inputSchema: z.object({ path: z.string().min(1), root: z.number().int().min(0).optional(), rootId: z.string().min(1).optional() }),
+      'Read a whole source file. Succeeds only for files under 32 KB — larger files return {tooLarge:true} metadata instead of content, ' +
+      'and you should then use read_file_range. Prefer read_file_range around known line numbers (e.g. search hits) to conserve budget.',
+    inputSchema: z.object({
+      path: z.string().min(1).describe('File path, workspace-root-relative.'),
+      root: z.number().int().min(0).optional(),
+      rootId: z.string().min(1).optional().describe('Workspace folder id for multi-root workspaces.'),
+    }),
     execute: async (input, ctx) => {
       const resolved = await resolveScopedPath(input.path, input.root, input.rootId, deps, ctx)
       if (isSensitivePath(resolved) || isSensitivePath(input.path)) throw sensitiveBlock(input.path)
@@ -307,14 +313,15 @@ export function createRepositoryTools(deps: RepositoryToolDeps): Array<Repositor
   tools.push({
     name: 'read_file_range',
     description:
-      'Read a numbered, bounded range of lines from a file (1-based, inclusive). ' +
-      'Capped at 400 lines / 48 KB; lines are truncated to 1000 chars. Sensitive files are blocked.',
+      'Read a bounded, numbered slice of a file — the preferred way to read large files or to inspect code around a search hit ' +
+      '(read ~30 lines before and after the hit line). Lines are 1-based and inclusive; capped at 400 lines / 48 KB per call. ' +
+      'Sensitive files (.env, keys) are blocked.',
     inputSchema: z.object({
-      path: z.string().min(1),
+      path: z.string().min(1).describe('File path, workspace-root-relative.'),
       root: z.number().int().min(0).optional(),
-      rootId: z.string().min(1).optional(),
-      startLine: z.number().int().min(1),
-      endLine: z.number().int().min(1),
+      rootId: z.string().min(1).optional().describe('Workspace folder id for multi-root workspaces.'),
+      startLine: z.number().int().min(1).describe('First line to read (1-based).'),
+      endLine: z.number().int().min(1).describe('Last line to read (1-based, inclusive).'),
     }),
     execute: async (input, ctx) => {
       const resolved = await resolveScopedPath(input.path, input.root, input.rootId, deps, ctx)
@@ -355,8 +362,9 @@ export function createRepositoryTools(deps: RepositoryToolDeps): Array<Repositor
   tools.push({
     name: 'get_project_structure',
     description:
-      'Return the package/module topology of the workspace — top-level directories with file counts, ' +
-      'dominant extensions, and package markers — instead of dumping every path.',
+      'Call this FIRST when starting exploration. Returns the package/module topology — top-level directories with file counts, ' +
+      'dominant extensions, and package markers (e.g. which dirs contain a package.json) — instead of thousands of raw paths. ' +
+      'Use it to decide which 1–2 directories are worth searching before reading anything. Takes no arguments.',
     inputSchema: z.object({}),
     execute: async (_input, ctx) => {
       const { entries, truncated: scanTruncated } = await deps.catalog.scan()
@@ -372,9 +380,13 @@ export function createRepositoryTools(deps: RepositoryToolDeps): Array<Repositor
   tools.push({
     name: 'get_package_info',
     description:
-      'Parse the nearest package manifest deterministically (package.json, go.mod, or pyproject.toml). ' +
-      'Never dumps lockfiles.',
-    inputSchema: z.object({ path: z.string().optional(), root: z.number().int().min(0).optional(), rootId: z.string().min(1).optional() }),
+      'Parse the nearest package manifest (package.json, go.mod, or pyproject.toml) at or above `path` — name, version, dependencies. ' +
+      'Use for "what does this package depend on / what version is it" questions; never read lockfiles. Returns {found:false} when no manifest exists.',
+    inputSchema: z.object({
+      path: z.string().optional().describe('Directory to start the upward manifest search from. Omit for the workspace root.'),
+      root: z.number().int().min(0).optional(),
+      rootId: z.string().min(1).optional().describe('Workspace folder id for multi-root workspaces.'),
+    }),
     execute: async (input, ctx) => {
       const selected = selectedRootIndex(input.root, input.rootId, deps.roots) ?? 0
       const selectedRoot = deps.roots[selected]

@@ -112,9 +112,12 @@ export function createDependencyTools(deps: DependencyToolsDeps): Array<Reposito
   tools.push({
     name: 'get_imports',
     description:
-      'List the imports of a source file (TypeScript/JS, Python, Go) — static, re-export, require, dynamic — with per-edge provenance. ' +
-      'Falls back to lexical extraction — no language server needed.',
-    inputSchema: z.object({ path: z.string().min(1), rootId: z.string().min(1).optional() }),
+      'List every import of one source file (TypeScript/JS, Python, Go): static, re-export, require, and dynamic imports, each with kind and provenance. ' +
+      'Works without a language server. Use to see what a module pulls in; use get_dependencies when you also want specifiers resolved to actual workspace files and external package names.',
+    inputSchema: z.object({
+      path: z.string().min(1).describe('Source file path, workspace-root-relative.'),
+      rootId: z.string().min(1).optional().describe('Workspace folder id for multi-root workspaces.'),
+    }),
     execute: async (input, ctx) => {
       const resolved = await resolveLocationInput(input, ctx, deps.roots)
       if (isSensitivePath(resolved) || isSensitivePath(input.path)) throw sensitiveBlock(input.path)
@@ -154,9 +157,13 @@ export function createDependencyTools(deps: DependencyToolsDeps): Array<Reposito
   tools.push({
     name: 'get_dependencies',
     description:
-      'Direct dependencies of a source file: workspace-local modules (resolved against real files), ' +
-      'external package names, and manifest-declared packages. Returns unresolved specifiers honestly.',
-    inputSchema: z.object({ path: z.string().min(1), rootId: z.string().min(1).optional() }),
+      'Direct dependencies of one source file, in three buckets: localDependencies (resolved to actual workspace files), ' +
+      'externalPackages (imported package names), and manifestPackages (declared in the nearest package.json but not imported here). ' +
+      'Unresolved specifiers are returned with resolved:false rather than guessed. Returns {available:false} for unsupported languages.',
+    inputSchema: z.object({
+      path: z.string().min(1).describe('Source file path, workspace-root-relative.'),
+      rootId: z.string().min(1).optional().describe('Workspace folder id for multi-root workspaces.'),
+    }),
     execute: async (input, ctx) => {
       const resolved = await resolveLocationInput(input, ctx, deps.roots)
       if (isSensitivePath(resolved) || isSensitivePath(input.path)) throw sensitiveBlock(input.path)
@@ -230,11 +237,12 @@ export function createDependencyTools(deps: DependencyToolsDeps): Array<Reposito
   tools.push({
     name: 'get_dependents',
     description:
-      'Reverse dependency lookup: which workspace files import the given module? Lexical scan (provenance "inference") — ' +
-      'aliased/path-mapped imports may be missed. Cap 100 results.',
+      'Reverse lookup: which workspace files import the given module? Use to assess the blast radius of a change or to find all consumers of a module. ' +
+      'Lexical scan (provenance "inference"): aliased/path-mapped imports may be missed; cap 100 results. ' +
+      'For exact symbol-level usage prefer find_references when a language server is available.',
     inputSchema: z.object({
-      path: z.string().min(1),
-      rootId: z.string().min(1).optional(),
+      path: z.string().min(1).describe('Module file path, workspace-root-relative.'),
+      rootId: z.string().min(1).optional().describe('Workspace folder id for multi-root workspaces.'),
       limit: z.number().int().min(1).max(500).optional(),
     }),
     execute: async (input, ctx) => {

@@ -13,6 +13,7 @@ import {
   setWorkspaceScope,
 } from './utils/workspaceScope'
 import { useAgentSession } from './hooks/useAgentSession'
+import { useProviders } from './hooks/useProviders'
 import { ChatPanel } from './components/chat/ChatPanel'
 import { ChatToggleButton } from './components/chat/ChatToggleButton'
 import { useCallback, useEffect, useMemo, useState } from 'react'
@@ -73,6 +74,9 @@ function AppShell({ noWorkspace }: { noWorkspace: boolean }) {
     [view.page],
   )
   const chat = useAgentSession(surface)
+  // Model picker beside the chat input: models exposed by providers with a
+  // stored API key (discovered host-side; keys never reach the webview).
+  const providers = useProviders()
   const [docTypesRev, setDocTypesRev] = useState(0)
 
   useEffect(() => {
@@ -149,6 +153,9 @@ function AppShell({ noWorkspace }: { noWorkspace: boolean }) {
         onCancel={chat.cancel}
         onClear={chat.clearMessages}
         onApplyPendingDraft={chat.applyPendingDraft}
+        models={providers.state?.models ?? []}
+        activeModel={providers.state?.model}
+        onSelectModel={providers.setModel}
       />
     </CRTMonitor>
   )

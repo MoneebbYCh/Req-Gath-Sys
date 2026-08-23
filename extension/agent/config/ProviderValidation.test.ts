@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from 'vitest'
-import { validateProviderKey } from './ProviderValidation'
+import { listProviderModels, validateProviderKey } from './ProviderValidation'
 
 function jsonResponse(status: number, body: unknown): Response {
   return {
@@ -72,5 +72,38 @@ describe('validateProviderKey', () => {
     )
     expect(result.ok).toBe(false)
     expect(result.error).toContain('unreadable model list')
+  })
+})
+
+describe('listProviderModels', () => {
+  const def = { baseUrl: 'https://api.deepseek.com/v1', defaultModel: 'deepseek-v4-flash' }
+
+  it('returns the already-validated list without a network call', async () => {
+    const validateFn = vi.fn()
+    const models = await listProviderModels(def, 'sk-x', ['deepseek-v4-pro'], validateFn)
+    expect(models).toEqual(['deepseek-v4-pro'])
+    expect(validateFn).not.toHaveBeenCalled()
+  })
+
+  it('returns nothing when no key is stored', async () => {
+    const validateFn = vi.fn()
+    expect(await listProviderModels(def, undefined, [], validateFn)).toEqual([])
+    expect(validateFn).not.toHaveBeenCalled()
+  })
+
+  it('discovers and sorts the provider model list once', async () => {
+    const validateFn = vi.fn(async () => ({
+      ok: true,
+      models: ['deepseek-v4-pro', 'deepseek-chat', 'deepseek-v4-flash'],
+    }))
+    const models = await listProviderModels(def, 'sk-x', [], validateFn)
+    expect(models).toEqual(['deepseek-chat', 'deepseek-v4-flash', 'deepseek-v4-pro'])
+    expect(validateFn).toHaveBeenCalledWith('https://api.deepseek.com/v1', 'sk-x')
+  })
+
+  it('falls back to the default model when discovery fails', async () => {
+    const validateFn = vi.fn(async () => ({ ok: false, error: 'Could not reach the provider' }))
+    expect(await listProviderModels(def, 'sk-x', [], validateFn)).toEqual(['deepseek-v4-flash'])
+    expect(await listProviderModels({ baseUrl: def.baseUrl }, 'sk-x', [], validateFn)).toEqual([])
   })
 })

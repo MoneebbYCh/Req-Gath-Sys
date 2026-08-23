@@ -105,10 +105,10 @@ export function createLspTools(deps: LspToolsDeps): Array<RepositoryTool<any, an
   tools.push({
     name: 'find_symbol',
     description:
-      'Find symbols across the workspace by name (LSP workspace symbols). ' +
-      'Returns name, kind, container, and location. Degrades when no language server is available.',
+      'Locate where a named class/function/type lives anywhere in the workspace (LSP workspace symbols) — call before reading when you know a symbol name but not its file. ' +
+      'Returns name, kind, container, and location. When it returns {available:false} there is no language server: fall back to search_code with the symbol name.',
     inputSchema: z.object({
-      query: z.string().min(1),
+      query: z.string().min(1).describe('Symbol name or prefix, e.g. "UserService".'),
       limit: z.number().int().min(1).max(200).optional(),
     }),
     execute: async (input, ctx) => {
@@ -151,10 +151,10 @@ export function createLspTools(deps: LspToolsDeps): Array<RepositoryTool<any, an
       name,
       description,
       inputSchema: z.object({
-        path: z.string().min(1),
-        rootId: z.string().min(1).optional(),
-        line: z.number().int().min(1),
-        column: z.number().int().min(1).optional(),
+        path: z.string().min(1).describe('File containing the symbol, workspace-root-relative.'),
+        rootId: z.string().min(1).optional().describe('Workspace folder id for multi-root workspaces.'),
+        line: z.number().int().min(1).describe('1-based line of the symbol.'),
+        column: z.number().int().min(1).optional().describe('1-based column on that line; defaults to 1. Point AT the symbol, not beside it.'),
         limit: z.number().int().min(1).max(500).optional(),
       }),
       execute: async (input, ctx) => {
@@ -192,19 +192,21 @@ export function createLspTools(deps: LspToolsDeps): Array<RepositoryTool<any, an
   tools.push(
     locationTool(
       'find_definition',
-      'Find the definition(s) of the symbol at path:line:column (1-based). Degrades when no language server is available.',
+      'Jump to where the symbol at path:line:column is defined — use after find_symbol or a search hit to reach the implementation. ' +
+        'Returns definition location(s). When it returns {available:false}, fall back to search_code for the symbol name.',
       (p, l, c, s) => deps.bridge.definition(p, l, c, s),
       DEFAULT_LOCATION_LIMIT,
     ),
     locationTool(
       'find_references',
-      'Find all references to the symbol at path:line:column (1-based). Bounded; use `limit` for more. Degrades when no language server is available.',
+      'Find every place the symbol at path:line:column is used across the workspace — use to answer "who calls/uses this" and to assess blast radius. ' +
+        'Bounded; pass limit for more. When it returns {available:false}, fall back to get_dependents or search_code.',
       (p, l, c, s) => deps.bridge.references(p, l, c, s),
       DEFAULT_REFERENCE_LIMIT,
     ),
     locationTool(
       'find_implementations',
-      'Find implementations of the symbol at path:line:column (1-based). Degrades when no language server is available.',
+      'Find concrete implementations of the interface/method at path:line:column. When it returns {available:false}, fall back to search_code.',
       (p, l, c, s) => deps.bridge.implementations(p, l, c, s),
       DEFAULT_LOCATION_LIMIT,
     ),
@@ -213,8 +215,13 @@ export function createLspTools(deps: LspToolsDeps): Array<RepositoryTool<any, an
   tools.push({
     name: 'get_document_symbols',
     description:
-      'Return the structured symbol outline of a file (functions, classes, exports, …). Degrades when no language server is available.',
-    inputSchema: z.object({ path: z.string().min(1), rootId: z.string().min(1).optional() }),
+      'Get the symbol outline of one file (functions, classes, exports with line numbers) WITHOUT reading its content — ' +
+      'use to decide which line range of a large file is worth reading via read_file_range. ' +
+      'When it returns {available:false}, fall back to search_code scoped to the file.',
+    inputSchema: z.object({
+      path: z.string().min(1).describe('File path, workspace-root-relative.'),
+      rootId: z.string().min(1).optional().describe('Workspace folder id for multi-root workspaces.'),
+    }),
     execute: async (input, ctx) => {
       const resolved = await resolveLocationInput(input, ctx, deps.roots)
       if (isSensitivePath(resolved) || isSensitivePath(input.path)) throw sensitiveBlock(input.path)
@@ -234,7 +241,10 @@ export function createLspTools(deps: LspToolsDeps): Array<RepositoryTool<any, an
     name: 'get_diagnostics',
     description:
       'Return current editor diagnostics for a file (errors/warnings with line + message), bounded to 200. Useful for "what is broken here" questions.',
-    inputSchema: z.object({ path: z.string().min(1), rootId: z.string().min(1).optional() }),
+    inputSchema: z.object({
+      path: z.string().min(1).describe('File path, workspace-root-relative.'),
+      rootId: z.string().min(1).optional().describe('Workspace folder id for multi-root workspaces.'),
+    }),
     execute: async (input, ctx) => {
       const resolved = await resolveLocationInput(input, ctx, deps.roots)
       if (isSensitivePath(resolved) || isSensitivePath(input.path)) throw sensitiveBlock(input.path)
@@ -252,12 +262,12 @@ export function createLspTools(deps: LspToolsDeps): Array<RepositoryTool<any, an
   tools.push({
     name: 'get_call_hierarchy',
     description:
-      'Callers and callees of the symbol at path:line:column (1-based), where the language provider supports call hierarchy (plan §11). ' +
-      'Empty result or unavailable when unsupported — use find_references as fallback.',
+      'Callers AND callees of the symbol at path:line:column (1-based) in one call — use to map a call chain quickly instead of running find_references and get_imports separately. ' +
+      'Returns empty/unavailable where the language provider lacks call hierarchy support — use find_references as fallback.',
     inputSchema: z.object({
-      path: z.string().min(1),
-      rootId: z.string().min(1).optional(),
-      line: z.number().int().min(1),
+      path: z.string().min(1).describe('File containing the symbol, workspace-root-relative.'),
+      rootId: z.string().min(1).optional().describe('Workspace folder id for multi-root workspaces.'),
+      line: z.number().int().min(1).describe('1-based line of the symbol.'),
       column: z.number().int().min(1).optional(),
       limit: z.number().int().min(1).max(500).optional(),
     }),
@@ -299,7 +309,8 @@ export function createLspTools(deps: LspToolsDeps): Array<RepositoryTool<any, an
   tools.push({
     name: 'get_repository_capabilities',
     description:
-      'Report which language intelligence is available per language (lsp, definitions, references, call hierarchy, import graph, lexical search) so analysis can adjust methodology.',
+      'Report which intelligence is available per language (lsp, definitions, references, call hierarchy, import graph, lexical search). ' +
+      'Call once at survey start: if lsp=false for a language, plan on search_code fallbacks instead of find_* tools for files in that language.',
     inputSchema: z.object({}),
     execute: async (_input, ctx) => {
       const { entries } = await deps.catalog.scan()

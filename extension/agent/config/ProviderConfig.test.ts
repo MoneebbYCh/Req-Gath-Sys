@@ -33,7 +33,7 @@ describe('ProviderConfig', () => {
     expect(config).toEqual({
       providerId: 'deepseek',
       backend: 'openai',
-      model: 'deepseek-v4-pro', // catalogue default
+      model: 'deepseek-v4-flash', // catalogue default
       baseUrl: 'https://api.deepseek.com/v1',
       apiKey: 'sk-secret',
     })
@@ -58,7 +58,7 @@ describe('ProviderConfig', () => {
       model: 'gpt-4o',
       baseUrl: '',
     })
-    expect(config.model).toBe('deepseek-v4-pro')
+    expect(config.model).toBe('deepseek-v4-flash')
   })
 
   it('falls back to DeepSeek for unknown ids', async () => {

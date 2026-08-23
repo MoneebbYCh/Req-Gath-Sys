@@ -19,7 +19,7 @@ import {
   type ProviderSettings,
 } from './agent/config/ProviderConfig'
 import { PROVIDERS, providerDef } from './agent/config/Providers'
-import { validateProviderKey } from './agent/config/ProviderValidation'
+import { listProviderModels, validateProviderKey } from './agent/config/ProviderValidation'
 import { RepositoryService } from './repository/RepositoryService'
 import { VscodeLspBridge } from './repository/LspBridge'
 import { createWorkspaceDescriptor } from './repository/WorkspaceDescriptor'
@@ -291,6 +291,21 @@ export function activate(context: vscode.ExtensionContext) {
   }
   let lastValidation: KeyValidation | undefined
 
+  /**
+   * One silent /models discovery per host session, so the chat model picker
+   * lists every model a stored key exposes without a manual "Validate" trip.
+   * An explicit validation always wins over this cached list.
+   */
+  let discoveredModels: Promise<string[]> | undefined
+
+  function availableModels(def: ReturnType<typeof providerDef>, apiKey: string | undefined): Promise<string[]> {
+    const validated =
+      lastValidation?.providerId === 'deepseek' && lastValidation.ok ? lastValidation.models : []
+    if (validated.length > 0 || !apiKey) return Promise.resolve(validated)
+    discoveredModels ??= listProviderModels(def, apiKey, [])
+    return discoveredModels
+  }
+
   /** Snapshot of provider state for the picker UI (keys themselves stay in SecretStorage). */
   async function buildProvidersState(): Promise<ProvidersState> {
     const settings = readProviderSettings()
@@ -313,7 +328,7 @@ export function activate(context: vscode.ExtensionContext) {
         ? settings.model.trim()
         : def.defaultModel || 'deepseek-v4-flash',
       baseUrl: def.baseUrl,
-      models: validation?.ok ? validation.models : [],
+      models: await availableModels(def, apiKey),
       error: validation && !validation.ok ? validation.error : undefined,
     }
   }
@@ -496,6 +511,7 @@ export function activate(context: vscode.ExtensionContext) {
       case 'providersClearKey': {
         await clearApiKey(context.secrets, 'deepseek')
         lastValidation = undefined
+        discoveredModels = undefined
         await refreshAgentConfig()
         postMessage({ type: 'providersState', state: await buildProvidersState() })
         return

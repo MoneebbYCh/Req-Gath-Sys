@@ -11,6 +11,7 @@ import {
 } from '../model/toolLoopTaskRunner'
 import { extractJsonBlock } from '../model/jsonBlock'
 import type { ModelProvider } from '../model/ModelProvider'
+import { NAVIGATION_PLAYBOOK } from './navigationPlaybook'
 import type { WorkerRunResult, WorkerRunContext } from './AnalysisWorker'
 
 /**
@@ -57,8 +58,9 @@ function explorerSystemPrompt(node: TaskNode): string {
     `Rules:\n` +
     `- Only claim structure facts you actually read from the repository.\n` +
     `- Tool results label evidence as [EVIDENCE:<id>]. Cite the exact evidence ids for every observation.\n` +
-    `- Note anything you could not verify under "unknowns" instead of guessing.\n` +
-    `- End your answer with ONE fenced JSON block:\n` +
+     `- Note anything you could not verify under "unknowns" instead of guessing.\n` +
+     `${NAVIGATION_PLAYBOOK}\n\n` +
+     `- End your answer with ONE fenced JSON block:\n` +
     '```json\n' +
     '{"overview":"one paragraph summary","structure_highlights":[{"claim":"...","evidenceIds":["evidence-id"]}],' +
     '"package_manifest":[{"claim":"package-name@version","evidenceIds":["evidence-id"]}],"unknowns":["..."]}\n' +

@@ -1053,34 +1053,129 @@ body:has(.chat-panel--open) .chat-toggle {
   }
 }
 
+/* Composer (Cursor/Copilot-style): one boxed area — auto-growing textarea on
+   top; model pill bottom-left, Send/Clear bottom-right inside the same border. */
 .chat-inputbar {
   display: flex;
-  gap: 6px;
-  padding: 8px;
-  border-top: 2px solid var(--color-on-background);
-  background: var(--color-surface-container);
-}
-
-.chat-input-wrap {
-  flex: 1;
-}
-
-.chat-input {
-  width: 100%;
-  padding: 5px 8px;
+  flex-direction: column;
+  gap: 2px;
+  margin: 8px;
+  padding: 6px 8px 5px;
   background: var(--color-surface);
   border: 2px solid var(--color-on-background);
-  color: var(--color-on-background);
-  font-family: inherit;
-  font-size: 13px;
   box-shadow:
     inset 1px 1px 0 0 rgba(128, 128, 128, 0.6),
     inset -1px -1px 0 0 rgba(255, 255, 255, 1);
 }
 
-.chat-input:focus {
+.chat-inputbar:focus-within {
   outline: 1px dotted var(--color-on-background);
   outline-offset: 1px;
+}
+
+.chat-input {
+  width: 100%;
+  max-height: 140px;
+  padding: 2px 2px 4px;
+  background: transparent;
+  border: none;
+  color: var(--color-on-background);
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.35;
+  resize: none;
+  overflow-y: auto;
+}
+
+.chat-input:focus {
+  outline: none;
+}
+
+.chat-input:disabled {
+  opacity: 0.55;
+}
+
+.chat-composer-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.chat-composer-bar .chat-input-actions {
+  margin-left: auto;
+}
+
+/* Model picker (Copilot/Cursor-style): a compact pill that hugs its content
+   so the text input keeps its width; the menu floats above the input bar. */
+.chat-model-picker {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.chat-model-btn {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  max-width: 150px;
+  padding: 4px 6px;
+  background: transparent;
+  border: none;
+  color: var(--color-on-surface-variant);
+  font-family: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.chat-model-btn:hover,
+.chat-model-btn[aria-expanded='true'] {
+  background: var(--color-surface-container-high, rgba(128, 128, 128, 0.15));
+  color: var(--color-on-background);
+  outline: 1px solid var(--color-on-background);
+}
+
+.chat-model-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-model-menu {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  z-index: 40;
+  min-width: 210px;
+  max-height: 220px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 3px;
+  list-style: none;
+  background: var(--color-surface);
+  border: 2px solid var(--color-on-background);
+  box-shadow: -3px 3px 0 0 rgba(0, 0, 0, 0.25);
+}
+
+.chat-model-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 5px 8px;
+  background: none;
+  border: none;
+  color: var(--color-on-background);
+  font-family: inherit;
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.chat-model-option:hover,
+.chat-model-option--active {
+  background: var(--color-secondary-container);
 }
 
 .chat-input-actions {

@@ -51,3 +51,22 @@ export async function validateProviderKey(
     return { ok: false, error: 'Provider returned an unreadable model list.' }
   }
 }
+
+/**
+ * Models a configured provider exposes (chat model picker). A list already
+ * validated this session wins; otherwise ONE silent /models discovery runs
+ * when a key exists. Discovery failure falls back to the default model so
+ * the picker still offers something usable instead of nothing.
+ */
+export async function listProviderModels(
+  def: { baseUrl: string; defaultModel?: string },
+  apiKey: string | undefined,
+  known: string[],
+  validateFn: (baseUrl: string, apiKey: string) => Promise<ProviderValidationResult> = validateProviderKey,
+): Promise<string[]> {
+  if (known.length > 0) return known
+  if (!apiKey) return []
+  const result = await validateFn(def.baseUrl, apiKey)
+  if (result.ok && result.models && result.models.length > 0) return [...result.models].sort()
+  return def.defaultModel ? [def.defaultModel] : []
+}

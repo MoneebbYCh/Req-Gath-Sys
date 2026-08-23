@@ -12,6 +12,10 @@ interface ChatPanelProps {
   plan?: PlanView
   documents?: DocumentProgressState[]
   error?: string
+  /** Models exposed by providers with a stored API key (chat model picker). */
+  models?: string[]
+  activeModel?: string
+  onSelectModel?: (model: string) => void
   onSend: (text: string) => void
   onCancel: () => void
   onClear: () => void
@@ -36,6 +40,9 @@ export function ChatPanel({
   plan,
   documents,
   error,
+  models = [],
+  activeModel,
+  onSelectModel,
   onSend,
   onCancel,
   onClear,
@@ -43,9 +50,11 @@ export function ChatPanel({
 }: ChatPanelProps) {
   const [input, setInput] = useState('')
   const listRef = useRef<HTMLDivElement>(null)
-  const inputRef = useRef<HTMLInputElement>(null)
+  const inputRef = useRef<HTMLTextAreaElement>(null)
   // Auto-follow the stream only while the user is near the bottom (plan §6).
   const [pinned, setPinned] = useState(true)
+  const [pickerOpen, setPickerOpen] = useState(false)
+  const pickerRef = useRef<HTMLDivElement>(null)
 
   const running = taskStatus === 'running'
   const paused = taskStatus === 'paused'
@@ -62,6 +71,31 @@ export function ChatPanel({
     }
   }, [messages, activities, running, pinned])
 
+  // Close the model menu on Escape or any click outside the picker.
+  useEffect(() => {
+    if (!pickerOpen) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setPickerOpen(false)
+    }
+    const onPointer = (e: PointerEvent) => {
+      if (pickerRef.current && !pickerRef.current.contains(e.target as Node)) setPickerOpen(false)
+    }
+    window.addEventListener('keydown', onKey)
+    window.addEventListener('pointerdown', onPointer)
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      window.removeEventListener('pointerdown', onPointer)
+    }
+  }, [pickerOpen])
+
+  // Auto-grow the composer vertically as the user types (Cursor-style), capped.
+  useEffect(() => {
+    const el = inputRef.current
+    if (!el) return
+    el.style.height = 'auto'
+    el.style.height = `${Math.min(el.scrollHeight, 140)}px`
+  }, [input])
+
   function handleScroll() {
     const el = listRef.current
     if (!el) return
@@ -69,12 +103,24 @@ export function ChatPanel({
     setPinned(nearBottom)
   }
 
-  function handleSubmit(e: React.FormEvent) {
-    e.preventDefault()
+  function doSend() {
     if (!input.trim() || busy) return
     onSend(input)
     setInput('')
     setPinned(true)
+  }
+
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    doSend()
+  }
+
+  // Enter sends, Shift+Enter adds a newline (chat convention).
+  function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault()
+      doSend()
+    }
   }
 
   function jumpToLatest() {
@@ -210,18 +256,58 @@ export function ChatPanel({
       )}
 
       <form className="chat-inputbar" onSubmit={handleSubmit}>
-        <div className="chat-input-wrap">
-          <input
-            ref={inputRef}
-            className="chat-input"
-            type="text"
-            placeholder={busy ? (running ? 'Task running…' : 'Task resuming…') : 'Type a message...'}
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            disabled={busy}
-          />
-        </div>
-        <div className="chat-input-actions">
+        <textarea
+          ref={inputRef}
+          className="chat-input"
+          rows={1}
+          placeholder={busy ? (running ? 'Task running…' : 'Task resuming…') : 'Type a message...'}
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={handleKeyDown}
+          disabled={busy}
+        />
+        <div className="chat-composer-bar">
+          {onSelectModel && (activeModel || models.length > 0) ? (
+            <div className="chat-model-picker" ref={pickerRef}>
+              <button
+                type="button"
+                className="chat-model-btn"
+                onClick={() => setPickerOpen((open) => !open)}
+                aria-haspopup="listbox"
+                aria-expanded={pickerOpen}
+                aria-label={`Model: ${activeModel ?? models[0] ?? ''}`}
+                title="Model used for the next task"
+              >
+                <span className="chat-model-name">{activeModel ?? models[0]}</span>
+                <span aria-hidden>⌄</span>
+              </button>
+              {pickerOpen && (
+                <ul className="chat-model-menu" role="listbox" aria-label="Chat model">
+                  {(!activeModel || models.includes(activeModel) ? models : [activeModel, ...models]).map(
+                    (m) => (
+                      <li key={m}>
+                        <button
+                          type="button"
+                          role="option"
+                          aria-selected={m === activeModel}
+                          className={`chat-model-option ${m === activeModel ? 'chat-model-option--active' : ''}`}
+                          onClick={() => {
+                            onSelectModel(m)
+                            setPickerOpen(false)
+                            inputRef.current?.focus()
+                          }}
+                        >
+                          <span>{m}</span>
+                          {m === activeModel ? <span aria-hidden>✓</span> : null}
+                        </button>
+                      </li>
+                    ),
+                  )}
+                </ul>
+              )}
+            </div>
+          ) : null}
+          <div className="chat-input-actions">
           {running ? (
             <button
               type="button"
@@ -250,6 +336,7 @@ export function ChatPanel({
           >
             Clear
           </button>
+          </div>
         </div>
       </form>
     </div>
