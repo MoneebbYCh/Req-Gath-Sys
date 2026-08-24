@@ -144,57 +144,12 @@ export const TOOL_NAMES = [
   'remove_pipeline_docs',
 ] as const
 
-/** Human-readable tool catalog for the agent system prompt. */
-export const TOOL_CATALOG = `AVAILABLE TOOLS (native tool calls; you MAY call several in one turn — batch read_file for inventories):
-Codebase tools (user's open workspace folder):
-- list_dir { "path"?: string, "depth"?: 1|2 }  -> list directory tree (default depth 2 with per-subfolder file counts; flags ★relevant folders like src/lib/api/agent*). Start with "." .
-- glob { "pattern"?: string, "preset"?: "config"|"entry points"|"tests", "max_results"?: number }  -> find files by name/path. Prefer preset for common intents; use pattern for custom globs (e.g. "src/**/*.ts"). Does NOT search file contents. Reports how many hits .gitignore hid.
-- grep { "pattern"?: string, "patterns"?: string[], "path"?: string, "include"?: string, "case_sensitive"?: boolean }  -> regex search in file contents. Default is case-insensitive (set case_sensitive:true to tighten). Pass patterns:[...] to search several phrasings in one call (results grouped). Use include:"*.ts" to filter by file type. Returns ±1 line of context. Cap ${MAX_GREP_MATCHES}/pattern — when hit, observation says so and suggests narrowing.
-- read_file { "path": string, "offset"?: number, "limit"?: number, "line_start"?: number, "line_end"?: number }  -> read a known file (1-based offset/limit; max ${MAX_READ_LINES} lines). Truncation is explicit — if you see "output truncated; full content saved to .charter-ai/tool-output/..." re-read that file or narrow your search.
-
-DEFAULT SEARCH ORDER (follow unless you already know the path):
-1. list_dir — orient on folder structure
-2. glob — candidate files by name/path/preset
-3. grep — candidate lines by content (use patterns:[...] for synonyms in one call)
-4. read_file — confirm with full context before claiming facts
-
-ZERO HITS ≠ ABSENT:
-- If grep/glob returns nothing, retry with a different phrasing (synonym, abbreviation, alternate casing, SDK import name) before concluding something is missing.
-- Require at least 2 different query attempts before stating a feature/file/symbol is not in the codebase.
-
-CITATIONS:
-- Every factual claim in a draft or inventory answer must trace to a specific read_file observation (cite path:line). Do not assert from grep snippets alone.
-
-TRUNCATION:
-- If a tool observation says output was truncated and saved to .charter-ai/tool-output/, use read_file on that path or re-run a narrower grep/glob — do not assume you saw everything.
-
-When exploring:
-- Prefer narrow searches over broad ones. If a search hits the match cap, narrow by directory or file type rather than reading everything.
-- For a specific named symbol/file/function: stop once you have enough evidence (with at least one read_file).
-- For category / inventory / "what does X do" / "where is AI" / "is that everything" questions they asked: do NOT stop after 2–3 good concept matches. Finding solid examples ≠ finding everything. If they only asked a count or a lookup, answer that — do not expand into a full-repo catalog.
-- For API / route / endpoint maps or totals they asked for: glob *Routes* / *router*, read the mount/index file, then batch-read EVERY mounted module (or grep handlers per file and sum). Nested router.use requires reading that file. Cite the file you opened. Split VERIFIED vs UNREAD if you stop short. Do not count unmounted files.
-
-SEARCH DISCIPLINE (category & enumeration questions):
-- Concept words ("agent", "chatbot", "AI") are guesses and miss features that use different vocabulary.
-- Always do a second, broader pass grepping for mechanical SDK/library anchors every LLM-touching file must contain, for example:
-  openai | OpenAI | chat.completions | embeddings.create | text-embedding
-  mistral | @mistralai | anthropic | @anthropic | langchain
-  chromadb | ChromaClient | vectorStore
-  Prefer one grep with patterns:[...] covering those anchors.
-  Also glob for *Service* / *Controller* / *Routes* names that look AI-related if the first pass is thin.
-- Before claiming a complete enumeration, note remaining UNREAD files. Never silently assume coverage.
-- If the user asked for chat-only (no document), put the answer in "message" and set document:null.
-
-Diagram tool (use when the document needs a Mermaid diagram):
-- validate_mermaid { "code": string, "title"?: string }  -> parse-check your Mermaid; on success returns a ready diagram block JSON to put in "document". Reason about the codebase (or chat) first, then draft Mermaid yourself and validate here — do NOT invent from a fixed template.
-
-Pipeline tools (document set on Home — starts empty; only what you create appears):
-- list_pipeline {}  -> list current custom documents (id, name). Call this before claiming what exists, or when the user asks what docs were made.
-- generate_pipeline { "documents": [ { "name": string, "icon"?: string, "description"?: string } ], "mode"?: "append"|"replace" }
-  -> creates canvas document slots on Home. "append" (default) adds; "replace" rebuilds the whole list.
-  Use this whenever the user wants a new doc on the pipeline. Prefer 1–8 focused docs. Do NOT put full canvas bodies in this tool — create the slot, then finish with document+targetDoc to draft it.
-- remove_pipeline_docs { "ids"?: string[], "names"?: string[], "all"?: boolean }
-  -> delete custom docs by id and/or name (case-insensitive), or all:true to clear the pipeline. Call list_pipeline first if unsure.`
+/**
+ * Short developer reference for tools. The LLM reads native tool schemas
+ * (`agentToolSchemas.ts`) plus mode policies in `prompts/` — not this string.
+ */
+export const TOOL_CATALOG = `Tools (native schemas): list_dir, glob, grep, read_file, validate_mermaid, list_pipeline, generate_pipeline, remove_pipeline_docs.
+Batch independent tools in one turn. Prefer list_dir → glob → grep → read_file. Cite path:line from read_file.`
 
 function clampInt(value: unknown, fallback: number, min: number, max: number): number {
   const n = Number(value)

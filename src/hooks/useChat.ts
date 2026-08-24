@@ -29,8 +29,11 @@ const MAX_HISTORY_MESSAGES = 20
 /** Cap each prior bubble so context stays bounded. */
 const MAX_HISTORY_CHARS = 4_000
 
-// Agentic chat can make several tool + LLM round-trips, so allow generous time.
-const TIMEOUT_MS = 180_000
+/**
+ * Agentic chat can run many sequential LLM steps (each up to ~3 min server-side).
+ * Client timeout must exceed typical full-inventory runs (~3–6+ min), not a single LLM call.
+ */
+const TIMEOUT_MS = 600_000
 
 function buildHistoryPayload(
   messages: ChatMessage[],
@@ -53,6 +56,8 @@ export function useChat(phase: string) {
   /** Interim status from the extension (thinking, tool progress, …). */
   const [statusText, setStatusText] = useState<string | null>(null)
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  /** Id of a soft-timeout bubble so a late real reply can replace it. */
+  const timeoutMsgIdRef = useRef<string | null>(null)
 
   const toggleOpen = useCallback(() => {
     setIsOpen((prev) => !prev)
@@ -88,7 +93,14 @@ export function useChat(phase: string) {
             ? { researchCheckpoint: msg.researchCheckpoint }
             : {}),
         }
-        setMessages((prev) => [...prev, reply])
+        const staleTimeoutId = timeoutMsgIdRef.current
+        timeoutMsgIdRef.current = null
+        setMessages((prev) => {
+          const withoutTimeout = staleTimeoutId
+            ? prev.filter((m) => m.id !== staleTimeoutId)
+            : prev
+          return [...withoutTimeout, reply]
+        })
       }
     }
     window.addEventListener('message', handler)
@@ -128,16 +140,22 @@ export function useChat(phase: string) {
 
       setIsTyping(true)
       setStatusText(null)
+      timeoutMsgIdRef.current = null
       vscode.postMessage({ type: 'chatMessage', text: trimmed, phase, history })
 
       clearTimeout_()
       timeoutRef.current = setTimeout(() => {
-        setIsTyping(false)
-        setStatusText(null)
+        // Soft timeout: keep waiting for a late chatResponse (extension may still be running).
+        setStatusText('Still working — large inventories can take several minutes…')
+        const timeoutId = nextId()
+        timeoutMsgIdRef.current = timeoutId
         const timeoutMsg: ChatMessage = {
-          id: nextId(),
+          id: timeoutId,
           role: 'assistant',
-          text: `No response received. Try again — check your API key (${BRAND_NAME}: Configure API Key).`,
+          text:
+            'This is taking longer than usual (common for full route/API counts). ' +
+            'The agent is likely still running — if a reply appears below, ignore this notice. ' +
+            `If nothing arrives, check your API key (${BRAND_NAME}: Configure API Key) or try a narrower question.`,
           timestamp: Date.now(),
         }
         setMessages((prev) => [...prev, timeoutMsg])
@@ -148,6 +166,7 @@ export function useChat(phase: string) {
 
   const clearMessages = useCallback(() => {
     clearTimeout_()
+    timeoutMsgIdRef.current = null
     setIsTyping(false)
     setStatusText(null)
     setMessages([{ ...WELCOME, timestamp: Date.now() }])

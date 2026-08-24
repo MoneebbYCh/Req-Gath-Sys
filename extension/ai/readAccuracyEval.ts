@@ -70,7 +70,7 @@ export const FIXTURE_GROUND_TRUTH: FixtureGroundTruth[] = [
     expectGrepHits: true,
     readPaths: ['extension/ai/tools.ts'],
     readOffset: 130,
-    readLimit: 80,
+    readLimit: 30,
     readNeedles: { 'extension/ai/tools.ts': ['list_pipeline', 'read_file'] },
   },
   {
@@ -78,9 +78,9 @@ export const FIXTURE_GROUND_TRUTH: FixtureGroundTruth[] = [
     grepPatterns: ['readFileTool', 'readFilePage'],
     expectGrepHits: true,
     readPaths: ['extension/ai/tools.ts'],
-    readOffset: 370,
+    readOffset: 335,
     readLimit: 30,
-    readNeedles: { 'extension/ai/tools.ts': ['readFilePageTool', 'read_file'] },
+    readNeedles: { 'extension/ai/tools.ts': ['readFilePageTool', 'function readFileTool'] },
   },
 ]
 

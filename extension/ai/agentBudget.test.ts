@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   grepReadNudge,
+  inferPromptMode,
   inferToolBudgetProfile,
   inventoryMountNudge,
   maxRoundTrips,
@@ -13,6 +14,7 @@ describe('inferToolBudgetProfile', () => {
   it('classifies lookup questions without a tool-call cap', () => {
     const profile = inferToolBudgetProfile('Where is processChat defined?', 'home')
     expect(profile.kind).toBe('inventory')
+    expect(profile.promptMode).toBe('research')
     expect(profile.steps).toBeUndefined()
     expect(maxRoundTrips(profile)).toBe(SAFETY_MAX_STEPS)
   })
@@ -20,11 +22,28 @@ describe('inferToolBudgetProfile', () => {
   it('classifies API/endpoint totals as full inventory', () => {
     const profile = inferToolBudgetProfile('hey tell me the total apis and routes in this project', 'home')
     expect(profile.kind).toBe('full-inventory')
+    expect(profile.promptMode).toBe('research')
   })
 
   it('classifies drafting separately', () => {
     const profile = inferToolBudgetProfile('Draft the architecture section with a diagram', 'architecture')
     expect(profile.kind).toBe('drafting')
+    expect(profile.promptMode).toBe('draft')
+  })
+})
+
+describe('inferPromptMode', () => {
+  it('prefers draft when writing content', () => {
+    expect(inferPromptMode('draft a BRD and add it to the pipeline', 'home')).toBe('draft')
+  })
+
+  it('uses pipeline for Home slot management without drafting', () => {
+    expect(inferPromptMode('list the docs on the pipeline', 'home')).toBe('pipeline')
+    expect(inferPromptMode('what docs exist?', 'home')).toBe('pipeline')
+  })
+
+  it('defaults to research for Q&A', () => {
+    expect(inferPromptMode('Where is processChat defined?', 'home')).toBe('research')
   })
 })
 
@@ -48,7 +67,9 @@ describe('resolveAgentSteps', () => {
 
 describe('grepReadNudge', () => {
   it('nudges after grep-only batch when read_file not seen', () => {
-    expect(grepReadNudge(['grep'], false)).toMatch(/read_file/)
+    const nudge = grepReadNudge(['grep'], false)
+    expect(nudge).toMatch(/read_file/)
+    expect(nudge).toMatch(/<system-reminder>/)
   })
 
   it('skips nudge when read_file in same batch', () => {
@@ -61,9 +82,12 @@ describe('grepReadNudge', () => {
 })
 
 describe('inventoryMountNudge', () => {
-  it('fires once for full-inventory profiles', () => {
+  it('fires once for full-inventory profiles with system-reminder', () => {
     const profile = inferToolBudgetProfile('enumerate all API routes', 'home')
-    expect(inventoryMountNudge(profile, false)).toMatch(/UNREAD/)
+    const nudge = inventoryMountNudge(profile, false)
+    expect(nudge).toMatch(/UNREAD/)
+    expect(nudge).toMatch(/grep/)
+    expect(nudge).toMatch(/<system-reminder>/)
     expect(inventoryMountNudge(profile, true)).toBeNull()
   })
 
@@ -78,5 +102,6 @@ describe('maxStepsPrompt', () => {
     expect(maxStepsPrompt('home')).toMatch(/MAXIMUM STEPS/)
     expect(maxStepsPrompt('home')).toMatch(/VERIFIED/)
     expect(maxStepsPrompt('home')).toMatch(/Do NOT make any tool calls/)
+    expect(maxStepsPrompt('home')).toMatch(/<system-reminder>/)
   })
 })

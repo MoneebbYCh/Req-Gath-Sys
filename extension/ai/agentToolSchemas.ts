@@ -15,7 +15,7 @@ export const AGENT_TOOL_SCHEMAS: AgentToolSchema[] = [
     function: {
       name: 'list_dir',
       description:
-        'List a directory tree with file counts to orient in the workspace. Start with path "." before searching. Flags relevant folders (src, extension, api, etc.).',
+        'List a directory tree with file counts to orient in the workspace. Start with path "." before searching when the folder layout is unknown. Flags relevant folders (src, extension, api, etc.). Prefer this before broad grep.',
       parameters: {
         type: 'object',
         properties: {
@@ -30,7 +30,7 @@ export const AGENT_TOOL_SCHEMAS: AgentToolSchema[] = [
     function: {
       name: 'glob',
       description:
-        'Find files by glob pattern within the workspace. Returns concise relative file paths. Use path to narrow the search and max_results to bound the result count. Does not search file contents — use grep for that.',
+        'Find files by glob pattern within the workspace. Returns concise relative paths. Use path to narrow and max_results to bound results. Does not search file contents — use grep for that. Prefer presets (config, entry points, tests) for common intents. Reports how many hits .gitignore hid.',
       parameters: {
         type: 'object',
         properties: {
@@ -51,7 +51,7 @@ export const AGENT_TOOL_SCHEMAS: AgentToolSchema[] = [
     function: {
       name: 'grep',
       description:
-        'Search file contents by regular expression within the workspace. Use path to narrow scope, include to filter files by glob (e.g. "*.ts"), and patterns for synonyms in one call. Returns file paths, line numbers, and bounded line previews — confirm with read_file before stating facts.',
+        'Search file contents by regex. Use path to narrow, include for file globs (e.g. "*.ts"), and patterns:[...] for synonyms in one call. Case-insensitive by default. Returns path:line previews — confirm with read_file before stating facts. Cap per pattern; when hit, narrow by directory or include. For category coverage, second-pass SDK/import anchors via patterns.',
       parameters: {
         type: 'object',
         properties: {
@@ -76,7 +76,7 @@ export const AGENT_TOOL_SCHEMAS: AgentToolSchema[] = [
     function: {
       name: 'read_file',
       description:
-        'Read a UTF-8 text file with line numbers. Page through large files with offset/limit (1-based line offset). Follow truncation hints for the next offset. If output was saved to .charter-ai/tool-output/, read that path next. For API inventories, call many read_file tools in one turn (one per route module).',
+        'Read a UTF-8 text file with line numbers. Page with offset/limit (1-based). Follow truncation hints; if output was saved to .charter-ai/tool-output/, read that path next. For API/route inventories, call many read_file tools in one turn (one per mounted route module). Cite path:line from files you actually opened.',
       parameters: {
         type: 'object',
         properties: {
@@ -94,7 +94,8 @@ export const AGENT_TOOL_SCHEMAS: AgentToolSchema[] = [
     type: 'function',
     function: {
       name: 'validate_mermaid',
-      description: 'Validate Mermaid diagram syntax before including in a document.',
+      description:
+        'Validate Mermaid diagram syntax before including in a document. Draft Mermaid yourself from codebase/chat first — do not use a fixed template. On success returns a diagram block JSON for "document".',
       parameters: {
         type: 'object',
         properties: {
@@ -109,7 +110,8 @@ export const AGENT_TOOL_SCHEMAS: AgentToolSchema[] = [
     type: 'function',
     function: {
       name: 'list_pipeline',
-      description: 'List custom document slots on the Home pipeline.',
+      description:
+        'List custom document slots on the Home pipeline (id, name). Call before claiming what exists, or before remove/replace.',
       parameters: { type: 'object', properties: {} },
     },
   },
@@ -117,7 +119,8 @@ export const AGENT_TOOL_SCHEMAS: AgentToolSchema[] = [
     type: 'function',
     function: {
       name: 'generate_pipeline',
-      description: 'Create or replace document slots on the Home pipeline.',
+      description:
+        'Create or replace document slots on the Home pipeline. mode "append" (default) adds; "replace" rebuilds the list. Prefer 1–8 focused docs. Do not put full canvas bodies here — create the slot, then finish with document+targetDoc to draft.',
       parameters: {
         type: 'object',
         properties: {
@@ -143,7 +146,8 @@ export const AGENT_TOOL_SCHEMAS: AgentToolSchema[] = [
     type: 'function',
     function: {
       name: 'remove_pipeline_docs',
-      description: 'Remove pipeline documents by id, name, or all:true.',
+      description:
+        'Remove pipeline documents by id, name, or all:true. Call list_pipeline first if unsure.',
       parameters: {
         type: 'object',
         properties: {

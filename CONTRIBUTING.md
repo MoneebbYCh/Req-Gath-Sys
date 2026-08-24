@@ -84,8 +84,9 @@ Development Host), then run **"Charter Ai: Open Pipeline"** from the command pal
 
 ### Add a new agent tool
 
-1. Add the name to `TOOL_NAMES` and the description to `TOOL_CATALOG` in
-   [`extension/ai/tools.ts`](extension/ai/tools.ts) — the catalog text is what the LLM reads.
+1. Add the name to `TOOL_NAMES` and a native schema entry in
+   [`extension/ai/agentToolSchemas.ts`](extension/ai/agentToolSchemas.ts) — schemas are what the LLM reads.
+   Optionally note it in the short `TOOL_CATALOG` comment string in `tools.ts`.
 2. Implement the handler and wire it into the `runTool` switch in the same file.
 3. Respect the existing caps pattern (results, chars, timeout) — observations stay bounded.
 

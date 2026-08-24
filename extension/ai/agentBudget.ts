@@ -13,10 +13,15 @@ export const ACTION_TOOLS = new Set([
 
 export type ToolBudgetKind = 'drafting' | 'home-draft' | 'full-inventory' | 'inventory' | 'general'
 
+/** Mode for layered system prompt assembly (OpenCode-style conditional add-ons). */
+export type PromptMode = 'research' | 'draft' | 'pipeline'
+
 export interface ToolBudgetProfile {
   kind: ToolBudgetKind
   /** Human-readable label for system prompt. */
   label: string
+  /** Which mode add-on to attach to the system prompt. */
+  promptMode: PromptMode
   /**
    * OpenCode `agent.steps`: max LLM turns with tools.
    * `undefined` = no cap (loop uses SAFETY_MAX_STEPS only as a circuit breaker).
@@ -26,10 +31,19 @@ export interface ToolBudgetProfile {
 
 const DRAFTING_RE =
   /\b(draft|write|populate|fill|update|canvas|document|mermaid|diagram|blocknote|pipeline|generate_pipeline|targetdoc)\b/i
+/** Content drafting without bare "pipeline" so Home slot management can use pipeline mode. */
+const CONTENT_DRAFT_RE =
+  /\b(draft|write|populate|fill|mermaid|diagram|blocknote|targetdoc|rewrite|edit the (doc|document|canvas)|update the (doc|document|canvas))\b/i
+const PIPELINE_MODE_RE =
+  /\b(list_pipeline|generate_pipeline|remove_pipeline|pipeline|doc slots?|document slots?|add (a )?(new )?doc|create (a )?(new )?doc|remove .+ docs?|what docs|list (my |the )?docs)\b/i
 const INVENTORY_RE =
   /\b(where|what|list|find|how does|how do|is there|cite|citation|inventory|exists|defined|implemented|support|handler|routes?|flow|architecture overview)\b/i
 const FULL_INVENTORY_RE =
   /\b(endpoints?|apis?|api routes?|all routes?|every route|every endpoint|total|enumerate|complete inventory|mounted routers?|route files?|express routes?|rest (api|endpoints?)|openapi|swagger)\b/i
+
+function systemReminder(body: string): string {
+  return `<system-reminder>\n${body}\n</system-reminder>`
+}
 
 /** Optional OpenCode-style step cap via CHARTER_AGENT_STEPS (unset = unlimited). */
 export function resolveAgentSteps(): number | undefined {
@@ -40,25 +54,38 @@ export function resolveAgentSteps(): number | undefined {
   return Math.min(Math.floor(n), SAFETY_MAX_STEPS)
 }
 
+/**
+ * Prefer draft when the user asked to write/update canvas content.
+ * Home + pipeline slot management (without drafting) → pipeline.
+ * Everything else → research.
+ */
+export function inferPromptMode(text: string, phase: string): PromptMode {
+  if (CONTENT_DRAFT_RE.test(text)) return 'draft'
+  if (phase !== 'home' && /\b(update|rewrite|change|edit|populate|fill)\b/i.test(text)) return 'draft'
+  if (phase === 'home' && PIPELINE_MODE_RE.test(text)) return 'pipeline'
+  return 'research'
+}
+
 export function inferToolBudgetProfile(text: string, phase: string): ToolBudgetProfile {
   const drafting = DRAFTING_RE.test(text)
   const inventory = INVENTORY_RE.test(text)
   const fullInventory = FULL_INVENTORY_RE.test(text)
   const steps = resolveAgentSteps()
+  const promptMode = inferPromptMode(text, phase)
 
   if (fullInventory) {
-    return { kind: 'full-inventory', label: 'full codebase inventory', steps }
+    return { kind: 'full-inventory', label: 'full codebase inventory', promptMode, steps }
   }
   if (drafting && phase !== 'home') {
-    return { kind: 'drafting', label: 'document drafting', steps }
+    return { kind: 'drafting', label: 'document drafting', promptMode, steps }
   }
   if (drafting && phase === 'home') {
-    return { kind: 'home-draft', label: 'home draft + pipeline', steps }
+    return { kind: 'home-draft', label: 'home draft + pipeline', promptMode, steps }
   }
   if (inventory) {
-    return { kind: 'inventory', label: 'codebase lookup', steps }
+    return { kind: 'inventory', label: 'codebase lookup', promptMode, steps }
   }
-  return { kind: 'general', label: 'general', steps }
+  return { kind: 'general', label: 'general', promptMode, steps }
 }
 
 export function maxRoundTrips(profile: ToolBudgetProfile): number {
@@ -71,13 +98,15 @@ export function maxStepsPrompt(phase: string): string {
     phase === 'home'
       ? '{"message","document","targetDoc","anchors"} — use targetDoc+document if drafting, else document:null'
       : '{"message","document","anchors"}'
-  return [
-    'CRITICAL — MAXIMUM STEPS REACHED',
-    'The maximum number of agent steps for this turn has been reached. Tools are disabled until the next user message.',
-    'Do NOT make any tool calls. Respond with final JSON only: ' + json + '.',
-    'Include: what you accomplished, anything still unread/unverified, and what to do next.',
-    'If this was a count/map, split VERIFIED vs UNREAD. Never title a partial map as complete.',
-  ].join(' ')
+  return systemReminder(
+    [
+      'CRITICAL — MAXIMUM STEPS REACHED',
+      'The maximum number of agent steps for this turn has been reached. Tools are disabled until the next user message.',
+      'Do NOT make any tool calls. Respond with final JSON only: ' + json + '.',
+      'Include: what you accomplished, anything still unread/unverified, and what to do next.',
+      'If this was a count/map, split VERIFIED vs UNREAD. Never title a partial map as complete.',
+    ].join(' '),
+  )
 }
 
 export function budgetConstraintText(profile: ToolBudgetProfile): string {
@@ -98,17 +127,20 @@ export function grepReadNudge(batchToolNames: string[], readFileSeenInSession: b
   const hadGrep = batchToolNames.includes('grep')
   const hadRead = batchToolNames.includes('read_file')
   if (!hadGrep || hadRead || readFileSeenInSession) return null
-  return '[SEARCH NUDGE: grep hits are leads only — call read_file on the top 1–2 matching files before stating facts or finishing.]'
+  return systemReminder(
+    'SEARCH: grep hits are leads only — call read_file on the top 1–2 matching files before stating facts or finishing.',
+  )
 }
 
 /** After the first research batch on a full inventory, insist on reading every mounted module. */
 export function inventoryMountNudge(profile: ToolBudgetProfile, alreadySent: boolean): string | null {
   if (alreadySent || profile.kind !== 'full-inventory') return null
-  return (
-    '[INVENTORY NUDGE: a mount table (app.use / router.use / app.get) is NOT an endpoint list. ' +
-    'In the next turn, batch many read_file calls — one per mounted route file. Follow nested router.use into that file. ' +
-    'Cite the file you actually read (do not cite index.js for a route defined in api/index.js). ' +
-    'Duplicate METHOD+path registrations are one endpoint. Middleware applies only to routes declared after it in that file. ' +
-    'If you cannot finish, split VERIFIED vs UNREAD. Never title a partial map as complete.]'
+  return systemReminder(
+    'INVENTORY/COUNT: a mount table is NOT an endpoint list. ' +
+      'Next turn: batch one grep per mounted route file (set path to that file; pattern for router.get/post/put/patch/delete). ' +
+      'Sum the match counts from those observations; spot-check at most 1–2 files with read_file. ' +
+      'Do not re-grep the whole api/ directory or re-read large files. ' +
+      'When the sum is ready, finish with the number + definition (document:null). ' +
+      'If incomplete, split VERIFIED vs UNREAD — never title a partial map as complete.',
   )
 }
