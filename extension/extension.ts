@@ -28,10 +28,8 @@ import {
   computeRepoFingerprint,
   createFileStateStore,
   loadStateSync,
-  memoryStateStore,
-  type PersistedAgentState,
-  type StateStore,
 } from './agent/state/PersistedState'
+import { resolvePricing, type ModelPricingRates } from './agent/model/pricing'
 import type { ProvidersState } from '../shared/providersProtocol'
 import { OperationalLogger } from './agent/observability/OperationalLogger'
 import {
@@ -109,7 +107,7 @@ export function activate(context: vscode.ExtensionContext) {
     return resolveFeatureFlags(stage.data, override.data)
   }
 
-  function startAgent(): void {
+  async function startAgent(): Promise<void> {
     agent?.dispose()
     const workspaceId =
       resolveWorkspaceRoot(vscode.workspace.workspaceFolders?.[0]?.uri.fsPath) ?? 'local'
@@ -123,6 +121,21 @@ export function activate(context: vscode.ExtensionContext) {
     const initialState = stateStore.loadSync()
     const repoFingerprint = computeRepoFingerprint(roots)
     const featureFlags = readFeatureFlags()
+    // Resolve per-model pricing from models.dev catalog (lazy fetch, cached).
+    const settings = readProviderSettings()
+    const storagePath = context.globalStorageUri?.fsPath ?? ''
+    const pricingRates = storagePath
+      ? await resolvePricing(settings.provider, settings.model, storagePath)
+      : undefined
+    const pricing = pricingRates
+      ? {
+          inputPerMillion: pricingRates.inputPerMillion,
+          outputPerMillion: pricingRates.outputPerMillion,
+          cacheReadPerMillion: pricingRates.cacheReadPerMillion,
+          cacheWritePerMillion: pricingRates.cacheWritePerMillion,
+          reasoningPerMillion: pricingRates.reasoningPerMillion,
+        }
+      : undefined
     agent = new AgentRuntimeClient(
       workerPath,
       {
@@ -138,6 +151,7 @@ export function activate(context: vscode.ExtensionContext) {
         // routing and scheduler limits.
         tools: filterModelTools(repo.modelToolDefinitions(), featureFlags),
         featureFlags,
+        pricing,
       },
       undefined,
       {
@@ -278,7 +292,7 @@ export function activate(context: vscode.ExtensionContext) {
     const next = await loadProviderConfig(context.secrets, readProviderSettings())
     if (JSON.stringify(next) !== JSON.stringify(agentConfig)) {
       agentConfig = next
-      if (agent) startAgent()
+      if (agent) await startAgent()
     }
   }
 
@@ -376,8 +390,8 @@ export function activate(context: vscode.ExtensionContext) {
     return setAndValidateProviderKey()
   }
 
-  function ensureAgent(): AgentRuntimeClient | undefined {
-    if (!agent) startAgent()
+  async function ensureAgent(): Promise<AgentRuntimeClient | undefined> {
+    if (!agent) await startAgent()
     return agent
   }
 
@@ -431,7 +445,7 @@ export function activate(context: vscode.ExtensionContext) {
           } else {
             const setupError = await ensureProviderReadyForAgentStart()
             if (setupError) failAgentStart(setupError)
-            else ensureAgent()?.start(msg.requestId, msg.text, msg.surface)
+            else (await ensureAgent())?.start(msg.requestId, msg.text, msg.surface)
           }
         } catch (err) {
           const detail = err instanceof Error ? err.message : String(err)
@@ -441,13 +455,13 @@ export function activate(context: vscode.ExtensionContext) {
         return
       }
       case 'agentCancel':
-        ensureAgent()?.cancel(msg.taskId)
+        (await ensureAgent())?.cancel(msg.taskId)
         return
       case 'agentResume':
-        ensureAgent()?.resume(msg.taskId)
+        (await ensureAgent())?.resume(msg.taskId)
         return
       case 'agentLoadSession':
-        ensureAgent()?.sendSnapshot()
+        (await ensureAgent())?.sendSnapshot()
         return
       case 'agentApplyDraft': {
         // Plan §16.3: the user reviewed a parked agent draft and accepted it —
@@ -694,7 +708,7 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.workspace.onDidChangeWorkspaceFolders(() => {
       void ensureWorkspaceFolder()
       // Workspace changed: reset the runtime (disposes the worker → cancels the running task).
-      if (agent) startAgent()
+      if (agent) void startAgent()
     }),
 
     vscode.commands.registerCommand('charter-ai.initializeWorkspace', async () => {

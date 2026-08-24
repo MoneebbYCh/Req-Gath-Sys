@@ -61,6 +61,14 @@ export const agentSessionSnapshotSchema = z.object({
   assistantText: z.string(),
   plan: planViewSchema.optional(),
   documents: z.array(documentProgressStateSchema).optional(),
+  usage: z.object({
+    inputTokens: z.number().nonnegative(),
+    outputTokens: z.number().nonnegative(),
+    cacheReadTokens: z.number().nonnegative().optional(),
+    cacheWriteTokens: z.number().nonnegative().optional(),
+    reasoningTokens: z.number().nonnegative().optional(),
+    estimatedCost: z.number().nonnegative().optional(),
+  }).optional(),
   summary: z.string().optional(),
   error: z.string().optional(),
 })
@@ -146,6 +154,18 @@ export const agentSessionSnapshotEventSchema = agentEventBaseSchema.extend({
   snapshot: agentSessionSnapshotSchema,
 })
 
+export const agentUsageUpdatedSchema = agentEventBaseSchema.extend({
+  type: z.literal('agentUsageUpdated'),
+  usage: z.object({
+    inputTokens: z.number().nonnegative(),
+    outputTokens: z.number().nonnegative(),
+    cacheReadTokens: z.number().nonnegative().optional(),
+    cacheWriteTokens: z.number().nonnegative().optional(),
+    reasoningTokens: z.number().nonnegative().optional(),
+    estimatedCost: z.number().nonnegative().optional(),
+  }),
+})
+
 /** The complete runtime-validated event catalogue (plan §6 event set). */
 export const agentEventSchema = z.discriminatedUnion('type', [
   agentTaskStartedSchema,
@@ -163,6 +183,7 @@ export const agentEventSchema = z.discriminatedUnion('type', [
   agentTaskCancelledSchema,
   agentTaskPausedSchema,
   agentSessionSnapshotEventSchema,
+  agentUsageUpdatedSchema,
 ])
 
 export type AgentEventParsed = z.infer<typeof agentEventSchema>

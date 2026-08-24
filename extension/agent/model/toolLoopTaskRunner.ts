@@ -9,7 +9,7 @@ import type {
   ModelToolDefinition,
 } from './ModelTypes'
 import { ProviderError, isRetryableProviderError } from './ProviderError'
-import { TaskBudgetController, type TaskTelemetry } from '../observability/TaskControls'
+import { TaskBudgetController, type TaskTelemetry, type ModelPricing } from '../observability/TaskControls'
 import type { OperationalDiagnostic } from '../observability/OperationalLogger'
 
 const DEFAULT_SYSTEM =
@@ -57,6 +57,8 @@ export interface ToolLoopConfig {
   recordEvidence?: (candidates: EvidenceCandidate[], repositoryVersion: string, sourceTool: string) => string[]
   /** Phase 16: shared task-wide controls, never a per-loop replacement. */
   budgetController?: TaskBudgetController
+  /** Per-model pricing for cost estimation. If omitted, cost is not calculated. */
+  pricing?: ModelPricing
   telemetry?: TaskTelemetry
   telemetryContext?: { taskId?: string; nodeId?: string; workerType?: string; route?: 'strong' | 'fast' }
   /**
@@ -65,13 +67,22 @@ export interface ToolLoopConfig {
    */
   diagnostic?: (d: OperationalDiagnostic) => void
   /**
-   * Batched execution of independent tool calls within one pass. Unset/0 keeps
+   * Batched execution of independent tool calls within a pass. Unset/0 keeps
    * the legacy sequential behavior; a value >1 is the concurrency ceiling.
    * All repository tools are read-only, so batching is safe.
    */
   parallelToolCalls?: number
   /** Invoked after each pass so callers can mirror mid-loop state durably. */
   onLoopCheckpoint?: (state: LoopCheckpoint) => void
+  /** Called after each model call settles with the budget snapshot (tokens + cost). */
+  onUsageUpdated?: (usage: {
+    inputTokens: number
+    outputTokens: number
+    cacheReadTokens?: number
+    cacheWriteTokens?: number
+    reasoningTokens?: number
+    estimatedCost?: number
+  }) => void
 }
 
 /** Mid-loop snapshot handed to durable state (plan §14 single-loop resume). */
@@ -432,6 +443,22 @@ export async function runToolLoop(
         kind: 'model', ...config.telemetryContext, model: request.model, durationMs: result.durationMs,
         inputTokens: result.usage?.inputTokens ?? estimatedInput, outputTokens: result.usage?.outputTokens ?? 0, ok: true,
       })
+      // Emit live usage update (tokens + cost) after each model call.
+      if (config.onUsageUpdated) {
+        if (config.budgetController) {
+          const snapshot = config.budgetController.snapshot()
+          config.onUsageUpdated({
+            inputTokens: snapshot.inputTokens,
+            outputTokens: snapshot.outputTokens,
+            cacheReadTokens: snapshot.cacheReadTokens,
+            cacheWriteTokens: snapshot.cacheWriteTokens,
+            reasoningTokens: snapshot.reasoningTokens,
+            estimatedCost: snapshot.estimatedCost,
+          })
+        } else {
+          config.onUsageUpdated({ inputTokens, outputTokens })
+        }
+      }
       return result
     })
   }
@@ -595,19 +622,21 @@ export function toolLoopTaskRunner(
 ): TaskRunner {
   return async ({ handle, emit, text }) => {
     const defaultModelCalls = config.maxModelCalls ?? (config.maxIterations ?? 4) + 1
-    const budgetController = config.budgetController ?? new TaskBudgetController({
-      maxModelCalls: defaultModelCalls,
-      maxToolCalls: config.maxToolCalls ?? 12,
-      // Config limits are per provider call; preserve existing fast-path
-      // behaviour while still producing one task-level aggregate controller.
-      maxInputTokens: (config.maxInputTokens ?? 32_000) * defaultModelCalls,
-      maxOutputTokens: (config.maxOutputTokens ?? 4_000) * defaultModelCalls,
-      maxParallelWorkers: 1,
-      maxReplans: 0,
-    })
+    const budgetController = config.budgetController ?? new TaskBudgetController(
+      {
+        maxModelCalls: defaultModelCalls,
+        maxToolCalls: config.maxToolCalls ?? 12,
+        maxInputTokens: (config.maxInputTokens ?? 32_000) * defaultModelCalls,
+        maxOutputTokens: (config.maxOutputTokens ?? 4_000) * defaultModelCalls,
+        maxParallelWorkers: 1,
+        maxReplans: 0,
+      },
+      config.pricing,
+    )
     const result = await runToolLoop(provider, executor, {
       ...config,
       budgetController,
+      onUsageUpdated: (usage) => emit.usageUpdated(usage),
       telemetryContext: { ...config.telemetryContext, taskId: handle.taskId },
     }, {
       text,

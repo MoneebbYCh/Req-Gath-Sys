@@ -148,6 +148,7 @@ function AppShell({ noWorkspace }: { noWorkspace: boolean }) {
         taskStatus={chat.taskStatus}
         plan={chat.plan}
         documents={chat.documents}
+        usage={chat.usage}
         error={chat.error}
         onSend={chat.send}
         onCancel={chat.cancel}

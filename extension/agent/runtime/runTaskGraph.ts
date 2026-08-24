@@ -100,6 +100,8 @@ export interface RunTaskGraphOptions {
   onGraphChange?: (nodes: TaskNode[]) => void
   onNodeDurable?: () => Promise<void> | void
   resume?: { graph?: TaskNode[] }
+  /** Per-model pricing for cost estimation. */
+  pricing?: import('../observability/TaskControls').ModelPricing
   emit: RunTaskGraphEmit
 }
 
@@ -203,7 +205,7 @@ export async function runTaskGraph(options: RunTaskGraphOptions): Promise<RunTas
       : await planner.planAsync(options.objective, signal)
     graph.seed(plan)
   }
-  const taskBudget = new TaskBudgetController(deriveTaskBudget(graph.all()))
+  const taskBudget = new TaskBudgetController(deriveTaskBudget(graph.all()), options.pricing)
   // Global concurrency is a scheduler concern (the sum of its per-worker-type
   // limits), not the minimum of per-node `maxParallelWorkers`. Every node
   // budget declares `maxParallelWorkers: 1` (a node runs its own model calls

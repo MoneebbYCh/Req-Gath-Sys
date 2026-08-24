@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import type { AgentActivity, AgentTaskStatus, ChatMessage } from '../../hooks/useAgentSession'
+import type { AgentActivity, AgentTaskStatus, AgentUsage, ChatMessage } from '../../hooks/useAgentSession'
 import type { DocumentProgressState, PlanView } from '../../../shared/agentProtocol'
 import { ChatMarkdown } from './ChatMarkdown'
 
@@ -11,6 +11,7 @@ interface ChatPanelProps {
   taskStatus: AgentTaskStatus
   plan?: PlanView
   documents?: DocumentProgressState[]
+  usage?: AgentUsage
   error?: string
   /** Models exposed by providers with a stored API key (chat model picker). */
   models?: string[]
@@ -39,6 +40,7 @@ export function ChatPanel({
   taskStatus,
   plan,
   documents,
+  usage,
   error,
   models = [],
   activeModel,
@@ -307,6 +309,17 @@ export function ChatPanel({
               )}
             </div>
           ) : null}
+          <div className="chat-usage-inline">
+            {usage && (usage.inputTokens > 0 || usage.outputTokens > 0) ? (
+              <span className="chat-usage-cost" title={usageBreakdownTooltip(usage)}>
+                {usage.estimatedCost != null ? `$${usage.estimatedCost.toFixed(4)}` : '—'}
+                {' · '}
+                {formatTokenCount(usage.inputTokens + usage.outputTokens)} tok
+              </span>
+            ) : (
+              <span className="chat-usage-empty">waiting for task…</span>
+            )}
+          </div>
           <div className="chat-input-actions">
           {running ? (
             <button
@@ -341,4 +354,18 @@ export function ChatPanel({
       </form>
     </div>
   )
+}
+
+function formatTokenCount(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`
+  return String(n)
+}
+
+function usageBreakdownTooltip(u: AgentUsage): string {
+  const parts = [`Input: ${formatTokenCount(u.inputTokens)}`, `Output: ${formatTokenCount(u.outputTokens)}`]
+  if (u.cacheReadTokens) parts.push(`Cache read: ${formatTokenCount(u.cacheReadTokens)}`)
+  if (u.cacheWriteTokens) parts.push(`Cache write: ${formatTokenCount(u.cacheWriteTokens)}`)
+  if (u.reasoningTokens) parts.push(`Reasoning: ${formatTokenCount(u.reasoningTokens)}`)
+  return parts.join('\n')
 }

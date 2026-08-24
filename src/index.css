@@ -1055,6 +1055,32 @@ body:has(.chat-panel--open) .chat-toggle {
 
 /* Composer (Cursor/Copilot-style): one boxed area — auto-growing textarea on
    top; model pill bottom-left, Send/Clear bottom-right inside the same border. */
+.chat-usage-inline {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 6px;
+  font-family: 'Chicago', 'Geneva', 'Lucida Grande', monospace;
+  font-size: 10px;
+  color: var(--color-on-surface-variant, #5f5e5a);
+  white-space: nowrap;
+  line-height: 1;
+}
+
+.chat-usage-inline .chat-usage-cost {
+  font-weight: bold;
+  color: var(--color-on-background);
+}
+
+.chat-usage-inline .chat-usage-empty {
+  opacity: 0.5;
+  font-style: italic;
+}
+
+.chat-usage-inline .chat-usage-sep {
+  opacity: 0.4;
+}
+
 .chat-inputbar {
   display: flex;
   flex-direction: column;

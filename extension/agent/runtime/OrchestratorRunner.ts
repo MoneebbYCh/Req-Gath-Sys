@@ -4,6 +4,7 @@ import { DOC_REQUEST, Planner } from '../planner/Planner'
 import { Scheduler } from '../workers/Scheduler'
 import type { TaskNode } from '../contracts/TaskGraph'
 import { runTaskGraph, type NodeRunResult, type NodeRunContext } from './runTaskGraph'
+import type { ModelPricing } from '../observability/TaskControls'
 
 export type { NodeRunResult, NodeRunContext } from './runTaskGraph'
 export { deriveTaskBudget } from './runTaskGraph'
@@ -55,6 +56,8 @@ export interface OrchestratorRunnerOptions {
   synthesize?: (input: FinalSynthesisInput, ctx: FinalSynthesisContext) => Promise<void>
   /** Recent durable conversation turns used to resolve terse follow-ups. */
   conversationContext?: () => readonly string[]
+  /** Per-model pricing for cost estimation. */
+  pricing?: ModelPricing
 }
 
 const CONTINUATION_REQUEST =
@@ -102,6 +105,7 @@ export function orchestratorRunner(options: OrchestratorRunnerOptions): TaskRunn
       runNode: options.runNode,
       onGraphChange: options.onGraphChange,
       onNodeDurable: options.onNodeDurable,
+      pricing: options.pricing,
       resume: resume ? { graph: resume.graph } : undefined,
       emit: {
         activity: (a) => emit.activity(a),

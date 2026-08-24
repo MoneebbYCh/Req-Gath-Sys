@@ -5,6 +5,9 @@ export type ModelRoute = 'strong' | 'fast'
 export interface ModelPricing {
   inputPerMillion: number
   outputPerMillion: number
+  cacheReadPerMillion?: number
+  cacheWritePerMillion?: number
+  reasoningPerMillion?: number
 }
 
 export interface TaskUsage {
@@ -12,6 +15,9 @@ export interface TaskUsage {
   toolCalls: number
   inputTokens: number
   outputTokens: number
+  cacheReadTokens?: number
+  cacheWriteTokens?: number
+  reasoningTokens?: number
   estimatedCost?: number
 }
 
@@ -27,7 +33,15 @@ export interface BudgetReservation {
  * prevent a second worker from spending the same remaining budget.
  */
 export class TaskBudgetController {
-  private usage: TaskUsage = { modelCalls: 0, toolCalls: 0, inputTokens: 0, outputTokens: 0 }
+  private usage: TaskUsage = {
+    modelCalls: 0,
+    toolCalls: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    reasoningTokens: 0,
+  }
 
   constructor(readonly budget: TaskBudget, private readonly pricing?: ModelPricing) {}
 
@@ -48,10 +62,22 @@ export class TaskBudgetController {
     return { inputTokens: input, outputTokens: output }
   }
 
-  settleModel(reservation: BudgetReservation, actual?: { inputTokens: number; outputTokens: number }): void {
+  settleModel(
+    reservation: BudgetReservation,
+    actual?: {
+      inputTokens: number
+      outputTokens: number
+      cacheReadTokens?: number
+      cacheWriteTokens?: number
+      reasoningTokens?: number
+    },
+  ): void {
     if (!actual) return
     this.usage.inputTokens += Math.max(0, actual.inputTokens) - reservation.inputTokens
     this.usage.outputTokens += Math.max(0, actual.outputTokens) - reservation.outputTokens
+    if (actual.cacheReadTokens !== undefined) this.usage.cacheReadTokens! += actual.cacheReadTokens
+    if (actual.cacheWriteTokens !== undefined) this.usage.cacheWriteTokens! += actual.cacheWriteTokens
+    if (actual.reasoningTokens !== undefined) this.usage.reasoningTokens! += actual.reasoningTokens
   }
 
   tryReserveTool(): boolean {
@@ -63,9 +89,25 @@ export class TaskBudgetController {
   snapshot(): TaskUsage {
     const base = { ...this.usage }
     if (!this.pricing) return base
+
+    const inputTotal = base.inputTokens ?? 0
+    const cacheRead = base.cacheReadTokens ?? 0
+    const cacheWrite = base.cacheWriteTokens ?? 0
+    const freshInput = Math.max(0, inputTotal - cacheRead - cacheWrite)
+
+    const reasoningRate = this.pricing.reasoningPerMillion ?? this.pricing.outputPerMillion
+    const cacheReadRate = this.pricing.cacheReadPerMillion ?? 0
+    const cacheWriteRate = this.pricing.cacheWritePerMillion ?? 0
+
     return {
       ...base,
-      estimatedCost: (base.inputTokens * this.pricing.inputPerMillion + base.outputTokens * this.pricing.outputPerMillion) / 1_000_000,
+      estimatedCost:
+        (freshInput * this.pricing.inputPerMillion +
+          cacheRead * cacheReadRate +
+          cacheWrite * cacheWriteRate +
+          (base.outputTokens ?? 0) * this.pricing.outputPerMillion +
+          (base.reasoningTokens ?? 0) * reasoningRate) /
+        1_000_000,
     }
   }
 
@@ -86,6 +128,10 @@ export interface TaskTelemetryEvent {
   durationMs?: number
   inputTokens?: number
   outputTokens?: number
+  cacheReadTokens?: number
+  cacheWriteTokens?: number
+  reasoningTokens?: number
+  estimatedCost?: number
   tool?: string
   ok?: boolean
   reason?: string

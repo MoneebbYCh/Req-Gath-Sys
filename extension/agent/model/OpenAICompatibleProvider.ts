@@ -31,7 +31,13 @@ interface StreamChunk {
     delta?: { content?: string | null; reasoning_content?: string | null; tool_calls?: StreamDeltaToolCall[] }
     finish_reason?: string | null
   }>
-  usage?: { prompt_tokens?: number; completion_tokens?: number } | null
+  usage?: {
+    prompt_tokens?: number
+    completion_tokens?: number
+    prompt_cache_hit_tokens?: number
+    prompt_cache_miss_tokens?: number
+    completion_tokens_details?: { reasoning_tokens?: number }
+  } | null
 }
 
 interface ProviderResponseLike {
@@ -258,11 +264,19 @@ export class OpenAICompatibleProvider implements ModelProvider {
           }
 
           if (chunk.usage) {
+            const promptTokens = chunk.usage.prompt_tokens ?? 0
+            const completionTokens = chunk.usage.completion_tokens ?? 0
+            const cacheReadTokens = chunk.usage.prompt_cache_hit_tokens
+            const cacheWriteTokens = chunk.usage.prompt_cache_miss_tokens
+            const reasoningTokens = chunk.usage.completion_tokens_details?.reasoning_tokens
             yield {
               type: 'usage',
               usage: {
-                inputTokens: chunk.usage.prompt_tokens ?? 0,
-                outputTokens: chunk.usage.completion_tokens ?? 0,
+                inputTokens: promptTokens,
+                outputTokens: completionTokens,
+                ...(cacheReadTokens !== undefined ? { cacheReadTokens } : {}),
+                ...(cacheWriteTokens !== undefined ? { cacheWriteTokens } : {}),
+                ...(reasoningTokens !== undefined ? { reasoningTokens } : {}),
               },
             }
           }

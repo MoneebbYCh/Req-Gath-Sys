@@ -131,6 +131,7 @@ export function singleLoopRunner(options: SingleLoopRunnerOptions): TaskRunner {
       onLoopCheckpoint: (state) => {
         options.onLoopCheckpoint?.(handle.taskId, compactLoopState(state))
       },
+      onUsageUpdated: (usage) => emit.usageUpdated(usage),
     }
 
     const result = await runToolLoop(options.provider, compositeExecutor, loopConfig, {

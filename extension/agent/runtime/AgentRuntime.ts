@@ -27,6 +27,15 @@ export interface AgentTaskHandle {
   plan?: PlanView
   /** Live per-document progress (plan §12); mirrored into snapshots. */
   documents: DocumentProgressState[]
+  /** Live usage (tokens + cost) for the current task. */
+  usage?: {
+    inputTokens: number
+    outputTokens: number
+    cacheReadTokens?: number
+    cacheWriteTokens?: number
+    reasoningTokens?: number
+    estimatedCost?: number
+  }
   summary?: string
   error?: string
   /** Next task-scoped event sequence. Emitters are disposable views. */
@@ -163,6 +172,20 @@ export class TaskEmitter {
     this.onEvent({ ...this.base(), type: 'agentAssistantCompleted' })
   }
 
+  /** Live usage update after a model call settles (tokens + cost). */
+  usageUpdated(usage: {
+    inputTokens: number
+    outputTokens: number
+    cacheReadTokens?: number
+    cacheWriteTokens?: number
+    reasoningTokens?: number
+    estimatedCost?: number
+  }): void {
+    if (!this.live()) return
+    this.handle.usage = usage
+    this.onEvent({ ...this.base(), type: 'agentUsageUpdated', usage })
+  }
+
   taskCompleted(summary?: string): void {
     this.handle.status = 'completed'
     this.handle.summary = summary
@@ -234,6 +257,7 @@ function toSnapshot(handle: AgentTaskHandle): AgentSessionSnapshot {
     assistantText: handle.assistantText,
     plan: handle.plan,
     documents: handle.documents.map((d) => ({ ...d })),
+    usage: handle.usage,
     summary: handle.summary,
     error: handle.error,
   }

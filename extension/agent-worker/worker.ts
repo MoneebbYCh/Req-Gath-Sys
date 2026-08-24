@@ -39,6 +39,7 @@ import { resolveFeatureFlags, type AgentFeatureFlags } from '../agent/rollout/Fe
 import { ComplexityRouter } from '../agent/planner/ComplexityRouter'
 import type { OperationalDiagnostic } from '../agent/observability/OperationalLogger'
 import type { TaskTelemetryEvent } from '../agent/observability/TaskControls'
+import type { ModelPricing } from '../agent/observability/TaskControls'
 
 /**
  * Agent runtime entrypoint — runs in an isolated worker thread (out/agent-worker.cjs).
@@ -64,6 +65,8 @@ interface WorkerInit {
   projectInstructions?: string[]
   /** Host-resolved capability snapshot for this worker lifetime. */
   featureFlags?: AgentFeatureFlags
+  /** Per-model pricing resolved host-side from models.dev catalog. */
+  pricing?: ModelPricing
 }
 
 const TOOL_CALL_TIMEOUT_MS = 60_000
@@ -291,6 +294,7 @@ const loopConfig: ToolLoopConfig = {
   // Workers (analysis/repository/validation) batch independent read-only tool
   // calls within a pass when enabled — cuts serial read latency.
   parallelToolCalls: featureFlags.parallelToolCalls ? 4 : 0,
+  pricing: init.pricing,
   recordEvidence: (candidates, repositoryVersion) => {
     return candidates.map((c) => evidence.record(c, repositoryVersion).id)
   },
@@ -487,6 +491,7 @@ const runtime = new AgentRuntime(
       // outputs have reached the host's atomic state store.
       onNodeDurable,
       synthesize: synthesizeFinalAnswer,
+      pricing: init.pricing,
       runNode,
     }),
 )

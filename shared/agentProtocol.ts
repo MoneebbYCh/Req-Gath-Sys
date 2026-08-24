@@ -140,6 +140,19 @@ export interface AgentSessionSnapshotEvent extends AgentEventBase {
   snapshot: AgentSessionSnapshot
 }
 
+/** Live usage update emitted after each model call settles (tokens + cost). */
+export interface AgentUsageUpdatedEvent extends AgentEventBase {
+  type: 'agentUsageUpdated'
+  usage: {
+    inputTokens: number
+    outputTokens: number
+    cacheReadTokens?: number
+    cacheWriteTokens?: number
+    reasoningTokens?: number
+    estimatedCost?: number
+  }
+}
+
 export type AgentEvent =
   | AgentTaskStartedEvent
   | AgentActivityEvent
@@ -156,6 +169,7 @@ export type AgentEvent =
   | AgentTaskCancelledEvent
   | AgentTaskPausedEvent
   | AgentSessionSnapshotEvent
+  | AgentUsageUpdatedEvent
 
 export type AgentTaskStatus = 'created' | 'running' | 'interrupted' | 'completed' | 'failed' | 'cancelled'
 
@@ -172,6 +186,15 @@ export interface AgentSessionSnapshot {
   plan?: PlanView
   /** Live per-document progress (plan §12). */
   documents?: DocumentProgressState[]
+  /** Live token/cost usage for the current task. */
+  usage?: {
+    inputTokens: number
+    outputTokens: number
+    cacheReadTokens?: number
+    cacheWriteTokens?: number
+    reasoningTokens?: number
+    estimatedCost?: number
+  }
   summary?: string
   error?: string
 }

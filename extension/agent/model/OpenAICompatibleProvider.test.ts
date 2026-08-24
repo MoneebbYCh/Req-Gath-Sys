@@ -273,6 +273,29 @@ describe('OpenAICompatibleProvider', () => {
     })
   })
 
+  it('parses DeepSeek cache and reasoning tokens from usage', async () => {
+    const fetchFn = vi.fn<FetchLike>(async () =>
+      sseResponse([
+        'data: {"choices":[{"delta":{"content":"Done"},"finish_reason":"stop"}]}\n\n',
+        'data: {"usage":{"prompt_tokens":100,"completion_tokens":50,"prompt_cache_hit_tokens":80,"prompt_cache_miss_tokens":10,"completion_tokens_details":{"reasoning_tokens":20}}}\n\n',
+        'data: [DONE]\n\n',
+      ]),
+    )
+
+    const events = await collect(provider(fetchFn))
+
+    const usageEvent = events.find((e) => e.type === 'usage') as Extract<
+      ModelEvent,
+      { type: 'usage' }
+    >
+    expect(usageEvent).toBeDefined()
+    expect(usageEvent.usage.inputTokens).toBe(100)
+    expect(usageEvent.usage.outputTokens).toBe(50)
+    expect(usageEvent.usage.cacheReadTokens).toBe(80)
+    expect(usageEvent.usage.cacheWriteTokens).toBe(10)
+    expect(usageEvent.usage.reasoningTokens).toBe(20)
+  })
+
   it('throws ProviderError from a stream that yields nothing at all', async () => {
     const fetchFn = vi.fn(async () => sseResponse([]))
     await expect(collect(provider(fetchFn))).rejects.toMatchObject({

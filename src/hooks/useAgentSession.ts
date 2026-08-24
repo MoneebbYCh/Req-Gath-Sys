@@ -41,7 +41,18 @@ export interface AgentUiState {
   plan?: PlanView
   /** Live per-document progress (plan §12). */
   documents: DocumentProgressState[]
+  /** Live token/cost usage for the current task. */
+  usage?: AgentUsage
   error?: string
+}
+
+export interface AgentUsage {
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens?: number
+  cacheWriteTokens?: number
+  reasoningTokens?: number
+  estimatedCost?: number
 }
 
 export type AgentAction =
@@ -69,6 +80,7 @@ export type AgentAction =
   | { type: 'taskCancelled'; taskId: string }
   | { type: 'taskPaused'; taskId: string; reason: string }
   | { type: 'snapshot'; snapshot: AgentSessionSnapshot }
+  | { type: 'usageUpdated'; taskId: string; usage: AgentUsage }
   | { type: 'userMessage'; text: string; timestamp: number }
   | { type: 'clear' }
 
@@ -142,6 +154,7 @@ function applySnapshot(state: AgentUiState, snapshot: AgentSessionSnapshot): Age
     taskStatus: mapStatus(snapshot.status),
     plan: snapshot.plan,
     documents: snapshot.documents ?? [],
+    usage: snapshot.usage ?? state.usage,
     error: snapshot.error,
   }
 }
@@ -247,6 +260,8 @@ export function agentReducer(state: AgentUiState, action: AgentAction): AgentUiS
     }
     case 'taskCompleted':
       return { ...state, taskStatus: 'idle' }
+    case 'usageUpdated':
+      return { ...state, usage: action.usage }
     case 'taskFailed': {
       // Plan §23.7: partial streamed answer survives the failure and is
       // marked incomplete.
@@ -323,6 +338,8 @@ export function eventToAction(e: AgentEvent): AgentAction {
       }
     case 'agentTaskCompleted':
       return { type: 'taskCompleted', taskId: e.taskId }
+    case 'agentUsageUpdated':
+      return { type: 'usageUpdated', taskId: e.taskId, usage: e.usage }
     case 'agentTaskFailed':
       return { type: 'taskFailed', taskId: e.taskId, error: e.error }
     case 'agentTaskCancelled':

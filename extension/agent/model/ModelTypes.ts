@@ -59,6 +59,12 @@ export interface ModelRequest {
 export interface ModelUsage {
   inputTokens: number
   outputTokens: number
+  /** Tokens read from provider cache (DeepSeek: prompt_cache_hit_tokens). */
+  cacheReadTokens?: number
+  /** Tokens written to provider cache (DeepSeek: prompt_cache_miss_tokens). */
+  cacheWriteTokens?: number
+  /** Tokens generated as reasoning output (DeepSeek: completion_tokens_details.reasoning_tokens). */
+  reasoningTokens?: number
 }
 
 /** Normalized model events (plan §3). */
