@@ -55,7 +55,8 @@ export function activate(context: vscode.ExtensionContext) {
 
     const rootUri = webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, 'dist'))
 
-    html = html.replace(/(src|href)=["']\.\/assets\//g, `$1="${rootUri}/assets/`)
+    // Rewrite every relative ./ path (JS/CSS under assets/, public files like mascot.png).
+    html = html.replace(/(src|href)=["']\.\//g, `$1="${rootUri}/`)
 
     const csp = [
       `default-src 'none'`,
@@ -68,7 +69,11 @@ export function activate(context: vscode.ExtensionContext) {
       `wasm-src ${webview.cspSource} blob:`,
     ].join('; ')
 
-    html = html.replace('<head>', `<head><meta http-equiv="Content-Security-Policy" content="${csp}">`)
+    // <base> makes runtime relative URLs (e.g. img src="./mascot.png") resolve into dist/.
+    html = html.replace(
+      '<head>',
+      `<head><meta http-equiv="Content-Security-Policy" content="${csp}"><base href="${rootUri}/">`,
+    )
 
     return html
   }

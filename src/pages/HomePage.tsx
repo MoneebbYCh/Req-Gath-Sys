@@ -202,6 +202,15 @@ export function HomePage({
                   )}
                   <button
                     type="button"
+                    onClick={() => onNavigate({ page: 'templates' })}
+                    className="border-2 border-on-background bg-white text-on-background font-bold px-6 py-2 text-sm outset-button hover:bg-surface-container-low"
+                    style={{ fontFamily: 'var(--font-label)' }}
+                    title="Browse document templates"
+                  >
+                    Browse Templates
+                  </button>
+                  <button
+                    type="button"
                     onClick={() => setPendingReset(true)}
                     className="border-2 border-on-background bg-white text-on-background font-bold px-6 py-2 text-sm outset-button hover:bg-surface-container-low disabled:opacity-40"
                     style={{ fontFamily: 'var(--font-label)' }}
@@ -368,11 +377,19 @@ export function HomePage({
                     No documents yet.
                   </p>
                   <p
-                    className="text-[11px] text-on-surface-variant"
+                    className="text-[11px] text-on-surface-variant mb-3"
                     style={{ fontFamily: 'var(--font-label)' }}
                   >
-                    Use Ask Charter Ai above, or add one manually.
+                    Use Ask Charter Ai above, browse templates, or add one manually.
                   </p>
+                  <button
+                    type="button"
+                    onClick={() => onNavigate({ page: 'templates' })}
+                    className="border-2 border-on-background bg-white text-on-background font-bold px-4 py-1.5 text-xs outset-button hover:bg-surface-container-low"
+                    style={{ fontFamily: 'var(--font-label)' }}
+                  >
+                    Browse Templates
+                  </button>
                 </div>
               ) : null}
               {docTypes.map((doc) => (

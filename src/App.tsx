@@ -1,8 +1,10 @@
 import { useViewState } from './hooks/useViewState'
 import { HomePage } from './pages/HomePage'
 import { ProfilePage } from './pages/ProfilePage'
+import { TemplatesPage } from './pages/TemplatesPage'
 import { PhaseCanvasPage } from './pages/PhaseCanvasPage'
 import { CRTMonitor } from './components/layout/CRTMonitor'
+import { LoadingSplash } from './components/BrandMark'
 import {
   isDocumentTypeId,
   applyCustomTypesFromDisk,
@@ -52,9 +54,7 @@ function App() {
   if (!scopeReady) {
     return (
       <CRTMonitor>
-        <div className="flex h-screen items-center justify-center text-sm text-on-surface-variant">
-          Connecting to workspace…
-        </div>
+        <LoadingSplash message="Connecting to workspace…" className="h-screen" />
       </CRTMonitor>
     )
   }
@@ -122,8 +122,19 @@ function AppShell({ noWorkspace }: { noWorkspace: boolean }) {
     if (view.page === 'profile') {
       return <ProfilePage onNavigate={navigate} goHome={goHome} />
     }
+    if (view.page === 'templates') {
+      return <TemplatesPage onNavigate={navigate} goHome={goHome} />
+    }
     if (isDocumentTypeId(view.page)) {
-      return <PhaseCanvasPage key={view.page} phaseId={view.page} onNavigate={navigate} goHome={goHome} />
+      return (
+        <PhaseCanvasPage
+          key={view.page}
+          phaseId={view.page}
+          onNavigate={navigate}
+          goHome={goHome}
+          seedFromMarketplaceId={view.seedFromMarketplaceId}
+        />
+      )
     }
     return (
       <HomePage
