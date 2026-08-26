@@ -31,7 +31,7 @@ export const BLANK_TEMPLATE: DocTemplate = {
   category: 'Blank',
   tagline: 'Start with an empty canvas and craft it exactly how you want.',
   description:
-    'A blank document. Use the tools sidebar (or type "/") to add headings, callouts, KPI grids, scope bounds, stakeholder tables, risk lists, and diagrams as you go. You can switch to a template at any time from the Templates tab.',
+    'A blank document. Use the tools sidebar (or type "/") to add headings, callouts, KPI grids, scope bounds, stakeholder tables, risk lists, and diagrams as you go.',
   custom: true,
   build: () => [para('')],
 }

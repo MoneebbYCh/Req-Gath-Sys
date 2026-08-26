@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { AgentActivity, AgentTaskStatus, AgentUsage, ChatMessage } from '../../hooks/useAgentSession'
 import type { DocumentProgressState, PlanView } from '../../../shared/agentProtocol'
 import { ChatMarkdown } from './ChatMarkdown'
+import mascotUrl from '../../assets/mascot.png'
 
 interface ChatPanelProps {
   isOpen: boolean
@@ -223,17 +224,22 @@ export function ChatPanel({
         {running && !currentActivity && (
           <div className="chat-bubble chat-bubble--assistant">
             <div className="chat-bubble-label">Assistant</div>
-            <div className="chat-typing-dots">
-              <span className="chat-dot" />
-              <span className="chat-dot" />
-              <span className="chat-dot" />
+            <div className="chat-typing-mascot" aria-hidden>
+              <img src={mascotUrl} alt="" className="chat-activity-mascot" width={36} height={20} />
             </div>
           </div>
         )}
 
         {running && currentActivity && (
           <div className="chat-activity-line">
-            <span className="chat-activity-spinner" aria-hidden />
+            <img
+              src={mascotUrl}
+              alt=""
+              className="chat-activity-mascot"
+              width={32}
+              height={17}
+              aria-hidden
+            />
             <span>{currentActivity}</span>
           </div>
         )}
