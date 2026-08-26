@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { DialogMascot } from '../BrandMark'
 
 interface TemplateTutorialProps {
   /** Context label, e.g. "Project Charter". */
@@ -56,7 +57,8 @@ export function TemplateTutorial({ documentLabel, onClose }: TemplateTutorialPro
         if (e.target === e.currentTarget) onClose()
       }}
     >
-      <div className="tmpl-window tut-window">
+      <div className="tmpl-window tut-window dialog-panel">
+        <DialogMascot />
         <div className="tmpl-titlebar">
           <span className="tmpl-titlebar-lines" aria-hidden="true" />
           <span className="tmpl-titlebar-name">Getting Started</span>

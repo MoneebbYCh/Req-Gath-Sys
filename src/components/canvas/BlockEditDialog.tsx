@@ -1,5 +1,6 @@
 import { useEffect, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
+import { DialogMascot } from '../BrandMark'
 
 interface BlockEditDialogProps {
   open: boolean
@@ -41,12 +42,13 @@ export function BlockEditDialog({
       }}
     >
       <div
-        className={`rg-edit-dialog${wide ? ' rg-edit-dialog--wide' : ''}`}
+        className={`rg-edit-dialog dialog-panel${wide ? ' rg-edit-dialog--wide' : ''}`}
         role="dialog"
         aria-modal="true"
         aria-label={title}
         onMouseDown={(e) => e.stopPropagation()}
       >
+        <DialogMascot />
         <header className="rg-edit-dialog-header">
           <h2 className="rg-edit-dialog-title">{title}</h2>
           <button type="button" className="rg-edit-dialog-close" onClick={onClose} aria-label="Close">

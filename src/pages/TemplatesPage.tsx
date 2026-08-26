@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { View } from '../hooks/useViewState'
-import { BrandMark } from '../components/BrandMark'
+import { BrandMark, DialogMascot } from '../components/BrandMark'
 import { TemplateDocPreview } from '../components/TemplateDocPreview'
 import {
   filterMarketplaceTemplates,
@@ -246,12 +246,13 @@ export function TemplatesPage({ onNavigate, goHome }: TemplatesPageProps) {
           }}
         >
           <div
-            className="mp-modal mp-modal--wide"
+            className="mp-modal mp-modal--wide dialog-panel"
             role="dialog"
             aria-modal="true"
             aria-labelledby="mp-modal-title"
             onClick={(e) => e.stopPropagation()}
           >
+            <DialogMascot />
             <div className="mp-modal-titlebar">
               <span className="mac-striped-header flex-1 min-w-0" aria-hidden />
               <span className="mp-modal-titlebar-label">{selected.name}</span>

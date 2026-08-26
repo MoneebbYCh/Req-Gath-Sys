@@ -2,26 +2,10 @@ import { useState } from 'react'
 import { createReactBlockSpec } from '@blocknote/react'
 import { BlockActions, deleteCanvasBlock } from '../BlockActions'
 import { BlockEditDialog } from '../BlockEditDialog'
+import { parseKpiItems, type KpiItem } from '../blockParsers'
 
-export interface KpiItem {
-  metric: string
-  target: string
-  method: string
-}
-
-export function parseKpiItems(raw: string): KpiItem[] {
-  try {
-    const parsed = JSON.parse(raw || '[]')
-    if (!Array.isArray(parsed)) return []
-    return parsed.map((item) => ({
-      metric: String(item?.metric ?? ''),
-      target: String(item?.target ?? ''),
-      method: String(item?.method ?? ''),
-    }))
-  } catch {
-    return []
-  }
-}
+export type { KpiItem }
+export { parseKpiItems }
 
 const EMPTY_ITEM: KpiItem = { metric: '', target: '', method: '' }
 

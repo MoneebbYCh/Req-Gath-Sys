@@ -1,4 +1,5 @@
 import { useEffect } from 'react'
+import { DialogMascot } from './BrandMark'
 
 interface ConfirmDialogProps {
   title: string
@@ -37,7 +38,8 @@ export function ConfirmDialog({
         if (e.target === e.currentTarget) onCancel()
       }}
     >
-      <div className="tmpl-window tut-window">
+      <div className="tmpl-window tut-window dialog-panel">
+        <DialogMascot />
         <div className="tmpl-titlebar">
           <span className="tmpl-titlebar-lines" aria-hidden="true" />
           <span className="tmpl-titlebar-name">{title}</span>

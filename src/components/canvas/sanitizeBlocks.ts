@@ -47,6 +47,8 @@ const KNOWN_STYLES = new Set([
   'code',
   'textColor',
   'backgroundColor',
+  'fontSize',
+  'fontFamily',
 ])
 
 /**

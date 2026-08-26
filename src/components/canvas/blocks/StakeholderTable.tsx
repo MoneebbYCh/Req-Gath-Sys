@@ -2,13 +2,10 @@ import { useState } from 'react'
 import { createReactBlockSpec } from '@blocknote/react'
 import { BlockActions, deleteCanvasBlock } from '../BlockActions'
 import { BlockEditDialog } from '../BlockEditDialog'
+import { parseStakeholderRows, type StakeholderRow } from '../blockParsers'
 
-export interface StakeholderRow {
-  nameRole: string
-  interest: string
-  influence: string
-  concern: string
-}
+export type { StakeholderRow }
+export { parseStakeholderRows }
 
 function normalizeLevel(value: string): 'H' | 'M' | 'L' | string {
   const v = value.trim().toUpperCase()
@@ -23,21 +20,6 @@ function levelLabel(level: string): string {
   if (level === 'M') return 'Med'
   if (level === 'L') return 'Low'
   return level
-}
-
-export function parseStakeholderRows(raw: string): StakeholderRow[] {
-  try {
-    const parsed = JSON.parse(raw || '[]')
-    if (!Array.isArray(parsed)) return []
-    return parsed.map((row) => ({
-      nameRole: String(row?.nameRole ?? ''),
-      interest: String(row?.interest ?? ''),
-      influence: String(row?.influence ?? ''),
-      concern: String(row?.concern ?? ''),
-    }))
-  } catch {
-    return []
-  }
 }
 
 const EMPTY_ROW: StakeholderRow = {

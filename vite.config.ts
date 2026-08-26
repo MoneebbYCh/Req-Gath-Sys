@@ -35,11 +35,27 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     cssCodeSplit: false,
+    // Don't modulepreload every lazy/diagram chunk on first paint — home should
+    // only fetch the entry + its own deps.
+    modulePreload: false,
     rollupOptions: {
       output: {
         entryFileNames: 'assets/index.js',
         chunkFileNames: 'assets/[name].js',
         assetFileNames: 'assets/[name][extname]',
+        manualChunks(id) {
+          // Isolate React so lazy editor/diagram chunks don't force Home to
+          // download BlockNote/Mermaid just to resolve shared React.
+          if (
+            id.includes('node_modules/react-dom') ||
+            id.includes('node_modules/react/') ||
+            id.includes('node_modules/scheduler')
+          ) {
+            return 'react-vendor'
+          }
+          // Do NOT manually chunk mermaid/dayjs/etc. Shared deps in a "mermaid"
+          // chunk would make the entry import that whole multi‑MB file.
+        },
       },
     },
   },

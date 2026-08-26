@@ -1,8 +1,6 @@
 import { useViewState } from './hooks/useViewState'
 import { HomePage } from './pages/HomePage'
 import { ProfilePage } from './pages/ProfilePage'
-import { TemplatesPage } from './pages/TemplatesPage'
-import { PhaseCanvasPage } from './pages/PhaseCanvasPage'
 import { CRTMonitor } from './components/layout/CRTMonitor'
 import { LoadingSplash } from './components/BrandMark'
 import {
@@ -18,7 +16,25 @@ import { useAgentSession } from './hooks/useAgentSession'
 import { useProviders } from './hooks/useProviders'
 import { ChatPanel } from './components/chat/ChatPanel'
 import { ChatToggleButton } from './components/chat/ChatToggleButton'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
+
+/** Heavy BlockNote/Mantine canvas — keep out of the home/startup bundle. */
+const PhaseCanvasPage = lazy(() =>
+  import('./pages/PhaseCanvasPage').then((m) => ({ default: m.PhaseCanvasPage })),
+)
+
+/** Marketplace templates catalog — defer until Templates is opened. */
+const TemplatesPage = lazy(() =>
+  import('./pages/TemplatesPage').then((m) => ({ default: m.TemplatesPage })),
+)
+
+function PageSuspense({ children }: { children: ReactNode }) {
+  return (
+    <Suspense fallback={<LoadingSplash message="Loading…" className="h-screen" />}>
+      {children}
+    </Suspense>
+  )
+}
 
 function App() {
   const vscode = getVscodeApi()
@@ -123,17 +139,23 @@ function AppShell({ noWorkspace }: { noWorkspace: boolean }) {
       return <ProfilePage onNavigate={navigate} goHome={goHome} />
     }
     if (view.page === 'templates') {
-      return <TemplatesPage onNavigate={navigate} goHome={goHome} />
+      return (
+        <PageSuspense>
+          <TemplatesPage onNavigate={navigate} goHome={goHome} />
+        </PageSuspense>
+      )
     }
     if (isDocumentTypeId(view.page)) {
       return (
-        <PhaseCanvasPage
-          key={view.page}
-          phaseId={view.page}
-          onNavigate={navigate}
-          goHome={goHome}
-          seedFromMarketplaceId={view.seedFromMarketplaceId}
-        />
+        <PageSuspense>
+          <PhaseCanvasPage
+            key={view.page}
+            phaseId={view.page}
+            onNavigate={navigate}
+            goHome={goHome}
+            seedFromMarketplaceId={view.seedFromMarketplaceId}
+          />
+        </PageSuspense>
       )
     }
     return (

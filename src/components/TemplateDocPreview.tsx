@@ -1,8 +1,10 @@
 import { useMemo } from 'react'
 import type { BlockNoteBlock } from '../types/document'
-import { parseStakeholderRows } from './canvas/blocks/StakeholderTable'
-import { parseRiskRows } from './canvas/blocks/RiskList'
-import { parseKpiItems } from './canvas/blocks/KpiGrid'
+import {
+  parseStakeholderRows,
+  parseRiskRows,
+  parseKpiItems,
+} from './canvas/blockParsers'
 
 interface TemplateDocPreviewProps {
   blocks: BlockNoteBlock[]

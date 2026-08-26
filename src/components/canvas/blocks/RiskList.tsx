@@ -2,13 +2,10 @@ import { useState } from 'react'
 import { createReactBlockSpec } from '@blocknote/react'
 import { BlockActions, deleteCanvasBlock } from '../BlockActions'
 import { BlockEditDialog } from '../BlockEditDialog'
+import { parseRiskRows, type RiskRow } from '../blockParsers'
 
-export interface RiskRow {
-  risk: string
-  likelihood: string
-  impact: string
-  mitigation: string
-}
+export type { RiskRow }
+export { parseRiskRows }
 
 function normalizeLevel(value: string): 'H' | 'M' | 'L' | string {
   const v = value.trim().toUpperCase()
@@ -23,21 +20,6 @@ function levelLabel(level: string): string {
   if (level === 'M') return 'Med'
   if (level === 'L') return 'Low'
   return level
-}
-
-export function parseRiskRows(raw: string): RiskRow[] {
-  try {
-    const parsed = JSON.parse(raw || '[]')
-    if (!Array.isArray(parsed)) return []
-    return parsed.map((row) => ({
-      risk: String(row?.risk ?? ''),
-      likelihood: String(row?.likelihood ?? ''),
-      impact: String(row?.impact ?? ''),
-      mitigation: String(row?.mitigation ?? ''),
-    }))
-  } catch {
-    return []
-  }
 }
 
 const EMPTY_ROW: RiskRow = {

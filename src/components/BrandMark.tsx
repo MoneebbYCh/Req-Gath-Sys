@@ -45,6 +45,21 @@ export function BrandMark({ size = 'lg', className = '', markOnly = false }: Bra
   )
 }
 
+/** Peeks from the top-right of a dialog panel (parent needs `.dialog-panel`). */
+export function DialogMascot({ className = '' }: { className?: string }) {
+  return (
+    <img
+      className={`dialog-mascot ${className}`.trim()}
+      src={mascotUrl}
+      alt=""
+      width={160}
+      height={87}
+      decoding="async"
+      aria-hidden
+    />
+  )
+}
+
 interface LoadingSplashProps {
   message: string
   className?: string

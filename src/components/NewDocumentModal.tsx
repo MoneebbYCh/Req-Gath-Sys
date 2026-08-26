@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { CUSTOM_DOC_ICONS } from '../data/documentTypes'
+import { DialogMascot } from './BrandMark'
 
 interface NewDocumentModalProps {
   onCreate: (name: string, icon: string) => void
@@ -33,7 +34,8 @@ export function NewDocumentModal({ onCreate, onCancel }: NewDocumentModalProps) 
         if (e.target === e.currentTarget) onCancel()
       }}
     >
-      <div className="tmpl-window tut-window">
+      <div className="tmpl-window tut-window dialog-panel">
+        <DialogMascot />
         <div className="tmpl-titlebar">
           <span className="tmpl-titlebar-lines" aria-hidden="true" />
           <span className="tmpl-titlebar-name">New Document</span>

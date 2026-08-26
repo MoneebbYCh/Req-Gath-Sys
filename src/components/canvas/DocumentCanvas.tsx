@@ -6,7 +6,8 @@ import {
 } from '@blocknote/react'
 import { BlockNoteView } from '@blocknote/mantine'
 import { BlockNoteEditor, type Block, type PartialBlock } from '@blocknote/core'
-import '@blocknote/core/fonts/inter.css'
+// Skip @blocknote/core/fonts/inter.css — Inter ships many weights (~400KB) and
+// the canvas already inherits Public Sans / JetBrains from app CSS.
 import '@blocknote/mantine/style.css'
 import type { BlockNoteBlock } from '../../types/document'
 import {

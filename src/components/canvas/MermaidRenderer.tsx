@@ -1,12 +1,26 @@
 import { useEffect, useId, useState } from 'react'
-import mermaid from 'mermaid'
 import { sanitizeMermaidLabels } from '../../../shared/mermaidSanitize'
 
-let mermaidReady = false
+type MermaidApi = typeof import('mermaid').default
 
-function ensureMermaid() {
+let mermaidApi: MermaidApi | null = null
+let mermaidReady = false
+let mermaidLoad: Promise<MermaidApi> | null = null
+
+async function loadMermaid(): Promise<MermaidApi> {
+  if (mermaidApi) return mermaidApi
+  if (!mermaidLoad) {
+    mermaidLoad = import('mermaid').then((mod) => {
+      mermaidApi = mod.default
+      return mermaidApi
+    })
+  }
+  return mermaidLoad
+}
+
+function ensureMermaid(api: MermaidApi) {
   if (mermaidReady) return
-  mermaid.initialize({
+  api.initialize({
     startOnLoad: false,
     securityLevel: 'strict',
     theme: 'neutral',
@@ -36,10 +50,12 @@ export function MermaidRenderer({ code, className }: MermaidRendererProps) {
         return
       }
       try {
-        ensureMermaid()
-        await mermaid.parse(source)
+        const api = await loadMermaid()
+        if (cancelled) return
+        ensureMermaid(api)
+        await api.parse(source)
         const id = `rg-mermaid-${reactId}-${Date.now()}`
-        const { svg: rendered } = await mermaid.render(id, source)
+        const { svg: rendered } = await api.render(id, source)
         if (!cancelled) {
           setSvg(rendered)
           setError(null)
