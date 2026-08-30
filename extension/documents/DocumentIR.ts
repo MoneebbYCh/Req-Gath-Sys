@@ -14,6 +14,8 @@ export type IRBlock =
   | { type: 'bullets'; items: string[] }
   | { type: 'numbered'; items: string[] }
   | { type: 'table'; header: string[]; rows: string[][] }
+  /** Prose from the model as CommonMark/GFM; expanded to canvas blocks at render time. */
+  | { type: 'markdown'; source: string }
   | { type: 'callout'; text: string; variant?: CalloutVariant; title?: string }
   | { type: 'mermaid'; diagram: string; title?: string }
   | { type: 'risk'; rows: Array<{ risk: string; likelihood?: string; impact?: string; mitigation?: string }> }
@@ -44,6 +46,10 @@ const tableBlock = z.object({
   type: z.literal('table'),
   header: z.array(z.string().max(200)).max(8),
   rows: z.array(z.array(z.string().max(500)).max(8)).max(40),
+})
+const markdownBlock = z.object({
+  type: z.literal('markdown'),
+  source: z.string().min(1).max(12_000),
 })
 const calloutBlock = z.object({
   type: z.literal('callout'),
@@ -105,6 +111,7 @@ export const irBlockSchema = z.discriminatedUnion('type', [
   bulletsBlock,
   numberedBlock,
   tableBlock,
+  markdownBlock,
   calloutBlock,
   mermaidBlock,
   riskBlock,

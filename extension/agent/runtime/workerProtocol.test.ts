@@ -10,6 +10,8 @@ describe('worker protocol runtime schemas', () => {
       { type: 'cancel', taskId: 'task-1' },
       { type: 'resume', taskId: 'task-1' },
       { type: 'snapshot' },
+      { type: 'resetSession' },
+      { type: 'forgetDocument', documentId: 'doc-1' },
       { type: 'toolResult', callId: 'call-1', ok: true, result: { data: [] } },
       { type: 'documentResult', callId: 'call-1', ok: false, error: 'conflict' },
       { type: 'statePersistAck', persistenceId: 'persist-1', ok: true },
@@ -23,7 +25,7 @@ describe('worker protocol runtime schemas', () => {
     expect(parseHostToWorkerMessage({ type: 'start', requestId: '', text: 'x', surface: { page: 'home' } })).toBeNull()
     expect(parseHostToWorkerMessage({ type: 'cancel', taskId: 42 })).toBeNull()
     expect(parseHostToWorkerMessage({ type: 'documentResult', callId: 'd', ok: 'yes' })).toBeNull()
-    expect(parseHostToWorkerMessage({ type: 'deleteWorkspace', path: '/' })).toBeNull()
+    expect(parseHostToWorkerMessage({ type: 'forgetDocument', documentId: '' })).toBeNull()
   })
 
   it('accepts document-structure diagnostics emitted by the document worker (plan §13)', () => {

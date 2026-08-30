@@ -1,6 +1,7 @@
 import * as vscode from 'vscode'
 import * as path from 'path'
 import {
+  deleteForm,
   loadDocTypes,
   loadForm,
   saveDocTypes,
@@ -71,6 +72,7 @@ export interface DocumentStore {
   saveDocTypes(data: unknown[]): Promise<void>
   loadDocument(documentId: string): Promise<unknown | null>
   saveDocument(documentId: string, data: unknown): Promise<void>
+  deleteDocument?(documentId: string): Promise<void>
   /** Optional revision persistence; absent = revisions live in memory only. */
   loadRevisions?(): Promise<Record<string, number>>
   saveRevisions?(data: Record<string, number>): Promise<void>
@@ -87,6 +89,7 @@ export function formStateDocumentStore(workspaceRoot: string): DocumentStore {
     saveDocTypes: (data) => saveDocTypes(workspaceRoot, data),
     loadDocument: (documentId) => loadForm(workspaceRoot, documentId),
     saveDocument: (documentId, data) => saveForm(workspaceRoot, documentId, data),
+    deleteDocument: (documentId) => deleteForm(workspaceRoot, documentId),
     loadRevisions: () => readJson<Record<string, number>>(revisionsPath).then((v) => v ?? {}),
     saveRevisions: (data) => writeJsonAtomic(revisionsPath, data),
     loadPendingDrafts: () => readJson<PendingDraft[]>(pendingDraftsPath).then((v) => v ?? []),
@@ -112,6 +115,9 @@ export function memoryDocumentStore(): DocumentStore & { documents: Map<string, 
     },
     async saveDocument(documentId: string, data: unknown) {
       store.documents.set(documentId, data)
+    },
+    async deleteDocument(documentId: string) {
+      store.documents.delete(documentId)
     },
     async loadRevisions() {
       return { ...store.revisions }
@@ -300,15 +306,28 @@ export class DocumentService {
     })
   }
 
-  /** Remove a registry entry (the canvas file is left in place, like the webview did). */
+  /** Remove the registry entry, canvas file, parked drafts, and agent IR. */
   async deleteDocType(id: string): Promise<void> {
     return this.withRegistryLock(async () => {
       const existing = await this.store.listDocTypes()
       await this.store.saveDocTypes(existing.filter((v) => this.docIdOf(v) !== id))
+      if (this.store.deleteDocument) await this.store.deleteDocument(id)
+      this.lastAgentIRs.delete(id)
       this.revisions.delete(id)
       this.scheduleRevisionsSave()
+      const draftIds = this.pendingByDocument.get(id) ?? []
+      for (const draftId of draftIds) this.drafts.delete(draftId)
       this.pendingByDocument.delete(id)
+      await this.savePendingDrafts()
     })
+  }
+
+  /** Delete every pipeline document (registry + files + agent IRs). */
+  async deleteAllDocTypes(): Promise<string[]> {
+    const existing = await this.store.listDocTypes()
+    const ids = existing.map((v) => this.docIdOf(v)).filter(Boolean)
+    for (const id of ids) await this.deleteDocType(id)
+    return ids
   }
 
   /** Reorder the registry: move the entry at `from` to index `to`. */

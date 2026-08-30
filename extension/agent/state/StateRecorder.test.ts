@@ -149,6 +149,15 @@ describe('StateRecorder', () => {
     expect(recorder.restoredKnowledge().findings[0].claim).toBe('Node runtime')
   })
 
+  it('drops a document IR when the user deletes the dashboard card', () => {
+    const records: PersistedAgentState[] = []
+    const recorder = new StateRecorder(emptyState('ws-1', 'fp-1'), sink(records))
+    recorder.onDocumentCheckpoint('doc-1', { title: 'PRD', sections: [{ heading: 'A', blocks: [{ type: 'paragraph', text: 'x' }] }] })
+    recorder.dropDocumentIR('doc-1')
+    recorder.flush()
+    expect(records.at(-1)?.documentIRs['doc-1']).toBeUndefined()
+  })
+
   it('persists and restores the runtime-owned session rather than webview bubbles', () => {
     const records: PersistedAgentState[] = []
     const sessions = new SessionStore()

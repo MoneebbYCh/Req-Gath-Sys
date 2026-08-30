@@ -24,12 +24,17 @@ import { RepositoryService } from './repository/RepositoryService'
 import { VscodeLspBridge } from './repository/LspBridge'
 import { createWorkspaceDescriptor } from './repository/WorkspaceDescriptor'
 import { DocumentService } from './documents/DocumentService'
+import { STATE_DIR } from './brand'
 import {
   computeRepoFingerprint,
   createFileStateStore,
+  emptyState,
   loadStateSync,
+  memoryStateStore,
+  type PersistedAgentState,
+  type StateStore,
 } from './agent/state/PersistedState'
-import { resolvePricing, type ModelPricingRates } from './agent/model/pricing'
+import { resolvePricing } from './agent/model/pricing'
 import type { ProvidersState } from '../shared/providersProtocol'
 import { OperationalLogger } from './agent/observability/OperationalLogger'
 import {
@@ -233,20 +238,52 @@ export function activate(context: vscode.ExtensionContext) {
     agent.onEvent((event) => postMessage({ type: 'agentEvent', event }))
   }
 
-  /** Per-workspace state store (storageUri is workspace-scoped; memory fallback). */
+  /** Per-workspace agent session: `.charter-ai/agent-session.json` (not VS Code storage). */
   const stateStores = new Map<string, StateStore & { loadSync: () => PersistedAgentState | null }>()
   function createAgentStateStore(workspaceId: string): StateStore & { loadSync: () => PersistedAgentState | null } {
     const existing = stateStores.get(workspaceId)
     if (existing) return existing
-    const storageUri = context.storageUri
-    const fileName = `agent-state/${workspaceId.replace(/[^a-z0-9]+/gi, '-').slice(0, 64)}.json`
-    const storagePath = storageUri === undefined ? '' : vscode.Uri.joinPath(storageUri, fileName).fsPath
+    const charterPath = workspaceId !== 'local' ? path.join(workspaceId, STATE_DIR, 'agent-session.json') : ''
+    if (charterPath) {
+      migrateLegacyAgentState(workspaceId, charterPath)
+      const store = {
+        ...createFileStateStore(charterPath),
+        loadSync: () => loadStateSync(charterPath),
+      }
+      stateStores.set(workspaceId, store)
+      return store
+    }
     const store = {
-      ...(storagePath ? createFileStateStore(storagePath) : memoryStateStore()),
-      loadSync: () => (storagePath ? loadStateSync(storagePath) : null),
+      ...memoryStateStore(),
+      loadSync: () => null as PersistedAgentState | null,
     }
     stateStores.set(workspaceId, store)
     return store
+  }
+
+  function patchPersistedAgentState(mutator: (state: PersistedAgentState) => void): void {
+    const ws = workspaceRoot()
+    if (!ws) return
+    const store = createAgentStateStore(ws)
+    const current = store.loadSync() ?? emptyState(ws, '')
+    mutator(current)
+    current.updatedAt = Date.now()
+    void store.save(current)
+  }
+
+  function migrateLegacyAgentState(workspaceId: string, charterPath: string): void {
+    try {
+      if (fs.existsSync(charterPath)) return
+      const storageUri = context.storageUri
+      if (!storageUri) return
+      const fileName = `agent-state/${workspaceId.replace(/[^a-z0-9]+/gi, '-').slice(0, 64)}.json`
+      const legacyPath = vscode.Uri.joinPath(storageUri, fileName).fsPath
+      if (!fs.existsSync(legacyPath)) return
+      fs.mkdirSync(path.dirname(charterPath), { recursive: true })
+      fs.copyFileSync(legacyPath, charterPath)
+    } catch {
+      /* first-run / read-only workspace */
+    }
   }
 
   // Host-side repository intelligence (plan §10): all analysis roots, dirty
@@ -468,6 +505,13 @@ export function activate(context: vscode.ExtensionContext) {
       case 'agentLoadSession':
         (await ensureAgent())?.sendSnapshot()
         return
+      case 'agentResetSession':
+        (await ensureAgent())?.resetSession()
+        patchPersistedAgentState((state) => {
+          state.session = undefined
+          state.tasks = []
+        })
+        return
       case 'agentApplyDraft': {
         // Plan §16.3: the user reviewed a parked agent draft and accepted it —
         // the draft replaces the document (their explicit choice wins).
@@ -554,7 +598,7 @@ export function activate(context: vscode.ExtensionContext) {
     switch (msg.type) {
       case 'loadDocTypes': {
         const data = await loadDocTypes(ws)
-        postMessage({ type: 'loadDocTypes', data })
+        postMessage({ type: 'loadDocTypes', data, mode: 'replace' })
         break
       }
       case 'saveDocTypes': {
@@ -575,6 +619,23 @@ export function activate(context: vscode.ExtensionContext) {
       }
       case 'documentDelete': {
         await ensureDocumentService(ws).deleteDocType(msg.id)
+        ;(await ensureAgent())?.forgetDocument(msg.id)
+        patchPersistedAgentState((state) => {
+          delete state.documentIRs[msg.id]
+        })
+        postMessage({ type: 'loadDocTypes', data: await ensureDocumentService(ws).listDocTypes(), mode: 'replace' })
+        break
+      }
+      case 'documentResetAll': {
+        const ids = await ensureDocumentService(ws).deleteAllDocTypes()
+        const runtime = await ensureAgent()
+        for (const id of ids) runtime?.forgetDocument(id)
+        runtime?.resetSession()
+        patchPersistedAgentState((state) => {
+          for (const id of ids) delete state.documentIRs[id]
+          state.session = undefined
+          state.tasks = []
+        })
         postMessage({ type: 'loadDocTypes', data: await ensureDocumentService(ws).listDocTypes(), mode: 'replace' })
         break
       }

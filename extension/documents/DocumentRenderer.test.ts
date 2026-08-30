@@ -99,6 +99,47 @@ describe('DocumentRenderer', () => {
     })
   })
 
+  it('renders markdown IR through remark into lists and paragraphs', () => {
+    const canvas = renderDocument(
+      ir([
+        {
+          heading: 'Setup',
+          blocks: [
+            {
+              type: 'markdown',
+              source: 'Configure first.\n\n- Copy env\n- Set URL\n\n## Subheading\n\nMore prose.',
+            },
+          ],
+        },
+      ]),
+    )
+    expect(canvas.blocks[0]).toEqual({ type: 'heading', props: { level: 1 }, content: 'Test Doc' })
+    expect(canvas.blocks[1]).toEqual({ type: 'heading', props: { level: 2 }, content: 'Setup' })
+    expect(canvas.blocks[2]).toMatchObject({ type: 'paragraph' })
+    expect(canvas.blocks.filter((b) => b.type === 'bulletListItem')).toHaveLength(2)
+    const headings = canvas.blocks.filter((b) => b.type === 'heading')
+    expect(headings.some((h) => (h.props as { level?: number }).level === 3)).toBe(true)
+    expect(headings.every((h) => (h.props as { level?: number }).level !== 2 || h.content === 'Setup')).toBe(true)
+  })
+
+  it('renders legacy table IR as native tableContent', () => {
+    const canvas = renderDocument(
+      ir([
+        {
+          heading: 'Matrix',
+          blocks: [{ type: 'table', header: ['A', 'B'], rows: [['1', '2']] }],
+        },
+      ]),
+    )
+    expect(canvas.blocks).toContainEqual({
+      type: 'table',
+      content: {
+        type: 'tableContent',
+        rows: [{ cells: ['A', 'B'] }, { cells: ['1', '2'] }],
+      },
+    })
+  })
+
   it('renders empty documents as a single empty paragraph (always a valid canvas)', () => {
     const canvas = renderDocument({ title: '', sections: [] })
     expect(canvas.blocks).toEqual([{ type: 'paragraph', content: '' }])

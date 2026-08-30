@@ -126,6 +126,22 @@ export class SessionStore {
     return this.session ? structuredClone(this.session) : undefined
   }
 
+  /** Wipe turns and summary so the model no longer sees a ghost conversation. */
+  reset(workspaceId: string): AgentSession {
+    if (this.session) this.session.status = 'archived'
+    const now = Date.now()
+    this.session = {
+      id: crypto.randomUUID(),
+      workspaceId,
+      createdAt: now,
+      updatedAt: now,
+      status: 'active',
+      turns: [],
+      memory: { objectives: [], decisions: [], evidenceIds: [], factIds: [], notes: [] },
+    }
+    return this.session
+  }
+
   recordUserTurn(taskId: string, content: string): void {
     this.record({
       taskId,

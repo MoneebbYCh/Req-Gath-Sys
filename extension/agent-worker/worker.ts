@@ -549,6 +549,15 @@ parentPort?.on('message', (raw: unknown) => {
     case 'snapshot':
       runtime.sendSnapshot()
       break
+    case 'resetSession': {
+      const next = sessions.reset(workspaceId)
+      recorder.resetConversation(workspaceId, next)
+      break
+    }
+    case 'forgetDocument':
+      recorder.dropDocumentIR(msg.documentId)
+      recorder.flush()
+      break
     case 'toolResult':
       break // handled by createHostToolExecutor's listener
   }

@@ -117,6 +117,14 @@ export class AgentRuntimeClient {
     this.post({ type: 'snapshot' })
   }
 
+  resetSession(): void {
+    this.post({ type: 'resetSession' })
+  }
+
+  forgetDocument(documentId: string): void {
+    this.post({ type: 'forgetDocument', documentId })
+  }
+
   dispose(): void {
     this.disposed = true
     this.worker.terminate?.()

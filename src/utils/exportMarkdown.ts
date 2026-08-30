@@ -35,6 +35,32 @@ function table(headers: string[], rows: string[][]): string {
   ].join('\n')
 }
 
+function cellText(cell: unknown): string {
+  if (typeof cell === 'string' || typeof cell === 'number') return String(cell)
+  if (Array.isArray(cell)) return inlineText(cell)
+  if (cell && typeof cell === 'object') {
+    const obj = cell as { content?: unknown }
+    if ('content' in obj) return inlineText(obj.content)
+  }
+  return ''
+}
+
+function nativeTable(content: unknown): string {
+  if (!content || typeof content !== 'object') return ''
+  const rows = (content as { type?: string; rows?: { cells?: unknown[] }[] }).rows
+  if (!Array.isArray(rows) || rows.length === 0) return ''
+  const matrix = rows.map((r) => (Array.isArray(r.cells) ? r.cells.map(cellText) : []))
+  if (matrix.every((r) => r.length === 0)) return ''
+  const width = Math.max(...matrix.map((r) => r.length))
+  const normalized = matrix.map((r) => {
+    const copy = [...r]
+    while (copy.length < width) copy.push('')
+    return copy
+  })
+  const [header, ...body] = normalized
+  return table(header, body)
+}
+
 function blockToMarkdown(block: BlockNoteBlock): string {
   const type = String(block.type || '')
   const props = propsOf(block)
@@ -53,6 +79,17 @@ function blockToMarkdown(block: BlockNoteBlock): string {
       return `1. ${text}`
     case 'checkListItem':
       return `- [${props.checked === true ? 'x' : ' '}] ${text}`
+    case 'quote':
+      return text
+        .split('\n')
+        .map((line) => `> ${line}`)
+        .join('\n')
+    case 'codeBlock': {
+      const lang = typeof props.language === 'string' ? props.language : ''
+      return `\`\`\`${lang}\n${text}\n\`\`\``
+    }
+    case 'table':
+      return nativeTable(block.content)
     case 'callout': {
       const title = typeof props.title === 'string' && props.title.trim() ? props.title : 'Callout'
       return `> **${title}**\n>\n> ${text}`.trimEnd()

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { sanitizeBlock, sanitizeBlockList } from './blockSanitize'
+import { sanitizeBlock, sanitizeBlockList, sanitizePartsList } from './blockSanitize'
 
 describe('sanitizeBlock', () => {
   it('normalizes callout variant aliases and trims text', () => {
@@ -85,6 +85,14 @@ describe('sanitizeBlock', () => {
     expect(sanitizeBlock({ type: 'paragraph', text: '' })).toBeNull()
   })
 
+  it('normalizes markdown source and rejects empty', () => {
+    expect(sanitizeBlock({ type: 'markdown', source: '  Hello\n• item  ' })).toEqual({
+      type: 'markdown',
+      source: 'Hello\n\n- item',
+    })
+    expect(sanitizeBlock({ type: 'markdown', source: '   ' })).toBeNull()
+  })
+
   it('returns null for unknown or hopeless shapes', () => {
     expect(sanitizeBlock({ type: 'gizmo' })).toBeNull()
     expect(sanitizeBlock('nope')).toBeNull()
@@ -114,5 +122,26 @@ describe('sanitizeBlockList', () => {
     expect(sanitizeBlockList({ nope: [] })).toBeNull()
     expect(sanitizeBlockList('x')).toBeNull()
     expect(sanitizeBlockList({ blocks: [] })).toBeNull()
+  })
+})
+
+describe('sanitizePartsList', () => {
+  it('maps md parts to markdown IR and keeps widgets', () => {
+    const result = sanitizePartsList({
+      parts: [
+        { md: 'Hello\n\n- a\n- b' },
+        { type: 'callout', text: 'Note', variant: 'info' },
+      ],
+    })
+    expect(result?.blocks).toEqual([
+      { type: 'markdown', source: 'Hello\n\n- a\n- b' },
+      { type: 'callout', text: 'Note', variant: 'info' },
+    ])
+    expect(result?.coerced).toBe(0)
+  })
+
+  it('returns null for missing parts', () => {
+    expect(sanitizePartsList({ blocks: [] })).toBeNull()
+    expect(sanitizePartsList({ parts: [] })).toBeNull()
   })
 })

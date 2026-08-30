@@ -1,5 +1,6 @@
 import { irBlockSchema, type CalloutVariant, type IRBlock } from './DocumentIR'
 import { sanitizeMermaidLabels } from '../../shared/mermaidSanitize'
+import { normalizeMarkdown } from './markdownNormalize'
 
 /**
  * Deterministic, LLM-tolerant block sanitation. The model is asked for a
@@ -23,6 +24,7 @@ const LIMITS = {
   calloutText: 2_000,
   calloutTitle: 200,
   mermaidDiagram: 10_000,
+  markdownSource: 12_000,
   blockTitle: 200,
   riskText: 500,
   riskLevel: 50,
@@ -126,6 +128,12 @@ function sanitizeByType(type: unknown, d: Dict): IRBlock | null {
     case 'numbered': {
       const items = cleanList(d.items, LIMITS.listItems, LIMITS.listMax)
       return items.length > 0 ? { type: 'numbered', items } : null
+    }
+    case 'markdown': {
+      const source = clean(d.source ?? d.md, LIMITS.markdownSource)
+      if (source === undefined) return null
+      const normalized = normalizeMarkdown(source)
+      return normalized ? { type: 'markdown', source: normalized.slice(0, LIMITS.markdownSource) } : null
     }
     case 'callout': {
       const text = clean(d.text, LIMITS.calloutText)
@@ -232,9 +240,36 @@ function sanitizeByType(type: unknown, d: Dict): IRBlock | null {
 export function sanitizeBlockList(raw: unknown): { blocks: IRBlock[]; coerced: number } | null {
   const dict = asDict(raw)
   if (!dict || !Array.isArray(dict.blocks)) return null
+  return sanitizeEntries(dict.blocks)
+}
+
+/**
+ * Sanitizes a `{"parts":[...]}` section payload: each part is either
+ * `{"md":"..."}` (prose Markdown → IR markdown) or a typed widget block.
+ */
+export function sanitizePartsList(raw: unknown): { blocks: IRBlock[]; coerced: number } | null {
+  const dict = asDict(raw)
+  if (!dict || !Array.isArray(dict.parts)) return null
+  const entries: unknown[] = []
+  for (const part of dict.parts) {
+    const p = asDict(part)
+    if (!p) {
+      entries.push(part)
+      continue
+    }
+    if (typeof p.md === 'string') {
+      entries.push({ type: 'markdown', source: p.md })
+      continue
+    }
+    entries.push(part)
+  }
+  return sanitizeEntries(entries)
+}
+
+function sanitizeEntries(entries: unknown[]): { blocks: IRBlock[]; coerced: number } | null {
   const blocks: IRBlock[] = []
   let coerced = 0
-  for (const entry of dict.blocks) {
+  for (const entry of entries) {
     const block = sanitizeBlock(entry)
     if (block) {
       blocks.push(block)

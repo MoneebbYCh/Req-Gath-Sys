@@ -99,10 +99,8 @@ function AppShell({ noWorkspace }: { noWorkspace: boolean }) {
     const handler = (event: MessageEvent) => {
       const msg = event.data
       if (msg?.type === 'loadDocTypes') {
-        const mode = msg.mode === 'replace' ? 'replace' : 'merge'
-        if (applyCustomTypesFromDisk(msg.data, mode) || mode === 'replace') {
-          setDocTypesRev((n) => n + 1)
-        }
+        applyCustomTypesFromDisk(msg.data, 'replace')
+        setDocTypesRev((n) => n + 1)
         return
       }
       if (msg?.type === 'navigateTo' && typeof msg.view?.page === 'string') {

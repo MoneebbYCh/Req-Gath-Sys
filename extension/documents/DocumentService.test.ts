@@ -136,4 +136,20 @@ describe('DocumentService', () => {
     const saved = await service.loadDocument(id)
     expect(saved?.blocks).toEqual([{ type: 'paragraph', content: '' }])
   })
+
+  it('deletes the canvas file, registry entry, drafts, and agent IR', async () => {
+    const store = memoryDocumentStore()
+    const service = new DocumentService(store)
+    const { id } = await service.createDocType('PRD')
+    await service.checkpoint(id, 0, ir([{ heading: 'A', blocks: [{ type: 'paragraph', text: 'keep' }] }]))
+    service.noteUserWrite(id)
+    await service.checkpoint(id, 1, ir([{ heading: 'A', blocks: [{ type: 'paragraph', text: 'parked' }] }]))
+
+    await service.deleteDocType(id)
+
+    expect(await service.listDocTypes()).toEqual([])
+    expect(await service.loadDocument(id)).toBeNull()
+    expect(service.loadIR(id)).toBeNull()
+    expect(service.pendingDraftsFor(id)).toHaveLength(0)
+  })
 })

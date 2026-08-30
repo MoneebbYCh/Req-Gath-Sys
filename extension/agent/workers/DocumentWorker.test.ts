@@ -21,7 +21,7 @@ function scriptedProvider(record: { prompts: string[] }): ModelProvider {
       const isOutline = request.messages[0]?.content.includes('Outline the')
       const text = isOutline
         ? '{"sections":[{"heading":"Overview"},{"heading":"Facts"}]}'
-        : '{"blocks":[{"type":"paragraph","text":"grounded text"}]}'
+        : '{"parts":[{"md":"grounded text"}]}'
       yield { type: 'text_delta', text }
       yield { type: 'finish', reason: 'stop' }
     },
@@ -188,7 +188,7 @@ describe('DocumentWorker', () => {
           type: 'text_delta',
           text: isOutline
             ? '{"sections":[{"heading":"Overview"}]}'
-            : '{"blocks":[{"type":"paragraph","text":"grounded text"}]}',
+            : '{"parts":[{"md":"grounded text"}]}',
         }
         yield { type: 'finish', reason: 'stop' }
       },
@@ -216,7 +216,7 @@ describe('DocumentWorker', () => {
           call === 1
             ? '{"sections":[{"heading":"Project Setup"},{"heading":"Runtime"}]}'
             : call === 4
-              ? '{"blocks":[{"type":"paragraph","text":"valid runtime guidance"}]}'
+              ? '{"parts":[{"md":"valid runtime guidance"}]}'
               : ''
         yield { type: 'text_delta', text }
         yield { type: 'finish', reason: 'stop' }
@@ -240,14 +240,14 @@ describe('DocumentWorker', () => {
       expect.objectContaining({ type: 'callout', variant: 'warn', title: 'Section needs review' }),
     ])
     expect(checkpoints[1].sections[1].blocks).toEqual([
-      { type: 'paragraph', text: 'valid runtime guidance' },
+      { type: 'markdown', source: 'valid runtime guidance' },
     ])
     expect(activities).toContain('Section structure could not be recovered; checkpointing an editable review notice')
     expect(events.progress.at(-1)).toEqual({ status: 'completed', completed: 2, total: 2 })
     expect(result.completedSections).toBe(2)
   })
 
-  it('turns Markdown section output into editable paragraphs and lists without a retry', async () => {
+  it('stores raw Markdown section output as an IR markdown block without a retry', async () => {
     const checkpoints: DocumentIR[] = []
     const telemetry: TaskTelemetryEvent[] = []
     let call = 0
@@ -274,19 +274,22 @@ describe('DocumentWorker', () => {
 
     expect(call).toBe(2)
     expect(checkpoints[0].sections[0].blocks).toEqual([
-      { type: 'paragraph', text: 'Configure the runtime before starting the service.' },
-      { type: 'bullets', items: ['Copy `.env.example` to `.env`', 'Set the database connection string'] },
+      {
+        type: 'markdown',
+        source:
+          'Configure the runtime before starting the service.\n\n- Copy `.env.example` to `.env`\n- Set the database connection string',
+      },
     ])
     expect(telemetry).toContainEqual(expect.objectContaining({
       kind: 'document',
       documentEvent: 'section_parse_attempt',
       parseOutcome: 'markdown',
       responseBytes: expect.any(Number),
-      blockCount: 2,
+      blockCount: 1,
     }))
   })
 
-  it('retries an empty JSON-mode section as Markdown and keeps it editable', async () => {
+  it('retries an empty JSON-mode section as parts JSON and keeps it editable', async () => {
     const checkpoints: DocumentIR[] = []
     const formats: Array<string | undefined> = []
     let call = 0
@@ -299,7 +302,7 @@ describe('DocumentWorker', () => {
             ? '{"sections":[{"heading":"Project Setup"}]}'
             : call === 2
               ? ''
-              : 'Create a `.env` file and configure the application settings.'
+              : '{"parts":[{"md":"Create a `.env` file and configure the application settings."}]}'
         yield { type: 'text_delta', text }
         yield { type: 'finish', reason: 'stop' }
       },
@@ -314,9 +317,9 @@ describe('DocumentWorker', () => {
 
     await worker.run(node(), ctx().ctx)
 
-    expect(formats).toEqual(['json_object', 'json_object', undefined])
+    expect(formats).toEqual(['json_object', 'json_object', 'json_object'])
     expect(checkpoints[0].sections[0].blocks).toEqual([
-      { type: 'paragraph', text: 'Create a `.env` file and configure the application settings.' },
+      { type: 'markdown', source: 'Create a `.env` file and configure the application settings.' },
     ])
   })
 
@@ -329,7 +332,7 @@ describe('DocumentWorker', () => {
           type: 'text_delta',
           text: isOutline
             ? '{"sections":[{"heading":"Plan"}]}'
-            : '{"blocks":[{"type":"kpiGrid","items":[{"metric":"Uptime","target":"99.9%","method":"SLA dashboards"}]},{"type":"stakeholderTable","rows":[{"nameRole":"Eng lead","interest":"H","influence":"M","concern":"scope creep"}]}]}',
+            : '{"parts":[{"type":"kpiGrid","items":[{"metric":"Uptime","target":"99.9%","method":"SLA dashboards"}]},{"type":"stakeholderTable","rows":[{"nameRole":"Eng lead","interest":"H","influence":"M","concern":"scope creep"}]}]}',
         }
         yield { type: 'finish', reason: 'stop' }
       },
@@ -358,7 +361,7 @@ describe('DocumentWorker', () => {
           type: 'text_delta',
           text: isOutline
             ? '{"sections":[{"heading":"Components"}]}'
-            : '{"blocks":[{"type":"paragraph","text":"valid frontend note"},{"type":"kpiGrid","items":[{"kpi":"wrong-field"}]}]}',
+            : '{"parts":[{"md":"valid frontend note"},{"type":"kpiGrid","items":[{"kpi":"wrong-field"}]}]}',
         }
         yield { type: 'finish', reason: 'stop' }
       },
@@ -374,11 +377,11 @@ describe('DocumentWorker', () => {
     expect(checkpoints).toHaveLength(1)
     const blocks = checkpoints[0].sections[0].blocks
     expect(blocks).toHaveLength(2)
-    expect(blocks[0]).toEqual({ type: 'paragraph', text: 'valid frontend note' })
+    expect(blocks[0]).toEqual({ type: 'markdown', source: 'valid frontend note' })
     expect(blocks[1]).toMatchObject({ type: 'callout', variant: 'warn', title: 'Unsupported content' })
   })
 
-  it('spells out the exact block shapes in section prompts', async () => {
+  it('spells out the parts contract in section prompts', async () => {
     const prompts: string[] = []
     const worker = new DocumentWorker({
       provider: scriptedProvider({ prompts }),
@@ -389,6 +392,8 @@ describe('DocumentWorker', () => {
     })
     await worker.run(node(), ctx().ctx)
     const sectionPrompt = prompts.find((p) => !p.includes('Outline the'))!
+    expect(sectionPrompt).toContain('"parts"')
+    expect(sectionPrompt).toContain('{"md":')
     expect(sectionPrompt).toContain('kpiGrid')
     expect(sectionPrompt).toContain('stakeholderTable')
     expect(sectionPrompt).toContain('"metric"')
@@ -511,7 +516,7 @@ describe('DocumentWorker', () => {
     expect(checkpoints).toHaveLength(1)
     expect(checkpoints[0].sections).toHaveLength(2)
     expect(checkpoints[0].sections[0].blocks).toEqual([{ type: 'paragraph', text: 'keep me' }])
-    expect(checkpoints[0].sections[1].blocks).toEqual([{ type: 'paragraph', text: 'grounded text' }])
+    expect(checkpoints[0].sections[1].blocks).toEqual([{ type: 'markdown', source: 'grounded text' }])
     expect(result.completedSections).toBe(1)
     expect(events.progress.at(-1)).toMatchObject({ status: 'completed' })
     // Validation-facing payload carries the FULL updated document text.
@@ -679,8 +684,8 @@ describe('DocumentWorker', () => {
         } else {
           sectionCalls++
           const text = sectionCalls === 1
-            ? '{"blocks":[{"type":"mermaid","diagram":"flowchart INVALID"},{"type":"paragraph","text":"intro"}]}'
-            : '{"blocks":[{"type":"paragraph","text":"facts"}]}'
+            ? '{"parts":[{"type":"mermaid","diagram":"flowchart INVALID"},{"md":"intro"}]}'
+            : '{"parts":[{"md":"facts"}]}'
           yield { type: 'text_delta', text }
         }
         yield { type: 'finish', reason: 'stop' }
@@ -715,7 +720,7 @@ describe('DocumentWorker', () => {
     }))
     expect(checkpoints[0].sections[0].blocks).toEqual([
       { type: 'mermaid', diagram: 'flowchart TD\n  A --> B' },
-      { type: 'paragraph', text: 'intro' },
+      { type: 'markdown', source: 'intro' },
     ])
   })
 
@@ -733,7 +738,7 @@ describe('DocumentWorker', () => {
         } else {
           sectionCalls++
           if (sectionCalls === 1) {
-            yield { type: 'text_delta', text: '{"blocks":[{"type":"mermaid","diagram":"flowchart INVALID"}]}' }
+            yield { type: 'text_delta', text: '{"parts":[{"type":"mermaid","diagram":"flowchart INVALID"}]}' }
           }
         }
         yield { type: 'finish', reason: 'stop' }

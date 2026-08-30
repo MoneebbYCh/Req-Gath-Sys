@@ -31,6 +31,7 @@ export type WebviewToExtensionMessage =
   | { type: 'documentCreate'; name: string; icon?: string }
   | { type: 'documentRename'; id: string; name: string }
   | { type: 'documentDelete'; id: string }
+  | { type: 'documentResetAll' }
   | { type: 'documentMove'; id: string; from: number; to: number }
   | { type: 'documentApplyDraft'; documentId: string; draftId: string; seq?: number }
   | WebviewToExtensionAgentMessage

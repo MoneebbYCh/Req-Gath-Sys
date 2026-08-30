@@ -429,7 +429,10 @@ export function useAgentSession(surface: AgentSurfaceContext) {
     vscodeRef.current?.postMessage({ type: 'documentApplyDraft', documentId, draftId })
   }, [])
 
-  const clearMessages = useCallback(() => dispatch({ type: 'clear' }), [])
+  const clearMessages = useCallback(() => {
+    dispatch({ type: 'clear' })
+    vscodeRef.current?.postMessage({ type: 'agentResetSession' })
+  }, [])
 
   return {
     isOpen,

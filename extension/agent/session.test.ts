@@ -70,4 +70,15 @@ describe('SessionStore', () => {
     expect(restored.current()).toMatchObject({ workspaceId: 'ws' })
     expect(restored.current()!.turns[0]).toMatchObject({ taskId: 'task-1', role: 'user' })
   })
+
+  it('reset wipes turns and summary', () => {
+    const store = new SessionStore()
+    store.getOrCreate('ws')
+    store.recordUserTurn('task-1', 'Architecture is on the dashboard')
+    store.setSummary('Docs exist')
+    const next = store.reset('ws')
+    expect(next.turns).toEqual([])
+    expect(next.conversationSummary).toBeUndefined()
+    expect(store.summary()).toBeUndefined()
+  })
 })

@@ -171,6 +171,21 @@ export class StateRecorder {
     this.schedule()
   }
 
+  /** User deleted a dashboard document — drop its regeneration IR. */
+  dropDocumentIR(documentId: string): void {
+    if (!(documentId in this.state.documentIRs)) return
+    delete this.state.documentIRs[documentId]
+    this.schedule()
+  }
+
+  /** Clear conversation (and task transcripts) while keeping repo facts. */
+  resetConversation(_workspaceId: string, session: AgentSession): void {
+    this.state.session = structuredCloneSafe(session)
+    this.state.tasks = []
+    this.state.updatedAt = Date.now()
+    this.flush()
+  }
+
   /**
    * Shared knowledge layer (plan §14): persisted so resumed tasks never
    * repeat completed repository analysis. Bounded by design — but invariant 10

@@ -210,4 +210,5 @@ export type WebviewToExtensionAgentMessage =
   | { type: 'agentCancel'; taskId: string }
   | { type: 'agentResume'; taskId: string }
   | { type: 'agentLoadSession' }
+  | { type: 'agentResetSession' }
   | { type: 'agentApplyDraft'; documentId: string; draftId: string; seq?: number }

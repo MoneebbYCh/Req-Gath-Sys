@@ -8,7 +8,8 @@ import type { ModelProvider } from '../model/ModelProvider'
 import type { ModelInvocationContext } from '../model/ModelTypes'
 import type { TaskBudgetController, TaskTelemetryEvent } from '../observability/TaskControls'
 import { irBlockSchema, documentIrSchema, type DocumentIR, type IRBlock } from '../../documents/DocumentIR'
-import { sanitizeBlockList } from '../../documents/blockSanitize'
+import { sanitizeBlockList, sanitizePartsList } from '../../documents/blockSanitize'
+import { normalizeMarkdown } from '../../documents/markdownNormalize'
 import { createMermaidValidator } from '../../documents/mermaidValidate'
 import type { DocumentGateway } from './DocumentGateway'
 import type { DocumentProgressState } from '../../../shared/agentProtocol'
@@ -78,24 +79,28 @@ const MAX_SECTIONS = 12
 /** Repair pass: corrected mermaid sources, one per failing diagram, in order. */
 const mermaidRepairSchema = z.object({ diagrams: z.array(z.string().max(10_000)) })
 
-/** Block vocabulary the model may emit, plus guidance to prefer rich shapes. */
+/** Section payload: interleaved Markdown prose + typed custom widgets. */
 const BLOCK_SCHEMA_HINT =
-  '\n\nEmit each block using EXACTLY one of these shapes (no other field names):\n' +
-  '- paragraph: {"type":"paragraph","text":"..."}\n' +
-  '- bullets: {"type":"bullets","items":["..."]}\n' +
-  '- numbered: {"type":"numbered","items":["..."]}\n' +
-  '- table: {"type":"table","header":["Col"],"rows":[["val"]]}\n' +
-  '- callout: {"type":"callout","text":"...","variant":"info|warn|success|error","title":"..."}\n' +
-  '- mermaid: {"type":"mermaid","diagram":"flowchart TD\\n  A --> B","title":"..."}\n' +
-  '- risk: {"type":"risk","rows":[{"risk":"...","likelihood":"H|M|L","impact":"H|M|L","mitigation":"..."}]}\n' +
-  '- scope: {"type":"scope","inScope":["..."],"outOfScope":["..."]}\n' +
-  '- kpiGrid: {"type":"kpiGrid","items":[{"metric":"...","target":"...","method":"..."}]}\n' +
-  '- stakeholderTable: {"type":"stakeholderTable","rows":[{"nameRole":"...","interest":"H|M|L","influence":"H|M|L","concern":"..."}]}\n' +
+  '\n\nRespond with ONLY JSON: {"parts":[...]}.\n' +
+  'Each part is EXACTLY one of:\n' +
+  '- Markdown prose: {"md":"<CommonMark/GFM string>"}\n' +
+  '  Use real Markdown for paragraphs, lists (-/*/1.), GFM tables, `inline code`,\n' +
+  '  fenced code, and **bold** / *italic* / [links](url).\n' +
+  '  Do NOT invent {"type":"paragraph"} or {"type":"bullets"} or {"type":"table"}.\n' +
+  '  Do not include a section title (the heading is already known). Use ### for subsections only.\n' +
+  '- Custom widgets (typed JSON only — Markdown cannot express these):\n' +
+  '  - callout: {"type":"callout","text":"...","variant":"info|warn|success|error","title":"..."}\n' +
+  '  - mermaid: {"type":"mermaid","diagram":"flowchart TD\\n  A --> B","title":"..."}\n' +
+  '  - risk: {"type":"risk","rows":[{"risk":"...","likelihood":"H|M|L","impact":"H|M|L","mitigation":"..."}]}\n' +
+  '  - scope: {"type":"scope","inScope":["..."],"outOfScope":["..."]}\n' +
+  '  - kpiGrid: {"type":"kpiGrid","items":[{"metric":"...","target":"...","method":"..."}]}\n' +
+  '  - stakeholderTable: {"type":"stakeholderTable","rows":[{"nameRole":"...","interest":"H|M|L","influence":"H|M|L","concern":"..."}]}\n' +
   'Rules: a mermaid "diagram" must be a single-line string using \\n escapes (never raw newlines). ' +
   'Start it with a supported diagram type: flowchart (or graph TD/LR), sequenceDiagram, classDiagram, ' +
   'stateDiagram-v2, erDiagram, gantt, pie, journey, mindmap, timeline, quadrantChart, or gitGraph. ' +
   'Quote any node/edge label containing { } < > | # ; or /. ' +
-  'Prefer rich blocks where they fit: a callout for caveats, a risk block for risks, a kpiGrid for measurable goals, ' +
+  'Prefer Markdown for ordinary prose/lists/tables. Use widgets only when the structure fits: ' +
+  'a callout for caveats, a risk block for risks, a kpiGrid for measurable goals, ' +
   'a stakeholderTable for roles, and a mermaid block for architecture or flow diagrams.'
 
 type SectionParseOutcome = 'valid' | 'empty' | 'markdown' | 'malformed_json' | 'schema_mismatch'
@@ -111,10 +116,17 @@ interface SectionParseResult {
 function parseSectionText(text: string): SectionParseResult {
   const raw = extractJsonBlock(text)
   if (raw !== undefined) {
-    // Deterministic block sanitation first: common LLM deviations (variant
-    // aliases, ragged tables, fence-wrapped diagrams, empty items) are coerced
-    // here instead of reaching the salvage path or a section retry. Hopeless
-    // blocks become editable warn callouts — nothing is silently dropped.
+    // Preferred: interleaved {"parts":[{"md":"..."}, widget, ...]}
+    const fromParts = sanitizePartsList(raw)
+    if (fromParts) {
+      return {
+        blocks: fromParts.blocks,
+        outcome: 'valid',
+        jsonExtracted: true,
+        ...(fromParts.coerced > 0 ? { schemaIssueCount: fromParts.coerced, schemaIssueCodes: ['sanitized'] } : {}),
+      }
+    }
+    // Legacy {"blocks":[...]} still accepted for salvage / older fixtures
     const sanitized = sanitizeBlockList(raw)
     if (sanitized) {
       return {
@@ -126,9 +138,6 @@ function parseSectionText(text: string): SectionParseResult {
     }
     const parsed = sectionSchema.safeParse(raw)
     if (parsed.success) return { blocks: parsed.data.blocks, outcome: 'valid', jsonExtracted: true }
-    // Whole-section validation failed — salvage the blocks that ARE valid and
-    // coerce the rest into editable callouts, so one bad block never wipes a
-    // section (or lands in the "needs review" placeholder).
     const salvaged = salvageBlocks(raw)
     if (salvaged) {
       return {
@@ -152,10 +161,14 @@ function parseSectionText(text: string): SectionParseResult {
   if (/^(?:```(?:json)?\s*)?[{[]/.test(text.trim())) {
     return { blocks: null, outcome: 'malformed_json', jsonExtracted: false }
   }
-  const blocks = markdownBlocks(text)
-  return blocks
-    ? { blocks, outcome: 'markdown', jsonExtracted: false }
-    : { blocks: null, outcome: 'malformed_json', jsonExtracted: false }
+  // Provider returned raw Markdown — store as one IR markdown block for remark at render.
+  const source = normalizeMarkdown(text)
+  if (!source) return { blocks: null, outcome: 'empty', jsonExtracted: false }
+  return {
+    blocks: [{ type: 'markdown', source: source.slice(0, 12_000) }],
+    outcome: 'markdown',
+    jsonExtracted: false,
+  }
 }
 
 /**
@@ -165,11 +178,19 @@ function parseSectionText(text: string): SectionParseResult {
  */
 function salvageBlocks(raw: unknown): IRBlock[] | null {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
-  const blocks = (raw as { blocks?: unknown }).blocks
-  if (!Array.isArray(blocks) || blocks.length === 0) return null
+  const obj = raw as { blocks?: unknown; parts?: unknown }
+  const entries = Array.isArray(obj.parts)
+    ? obj.parts.map((part) => {
+        if (part && typeof part === 'object' && !Array.isArray(part) && typeof (part as { md?: unknown }).md === 'string') {
+          return { type: 'markdown', source: (part as { md: string }).md }
+        }
+        return part
+      })
+    : obj.blocks
+  if (!Array.isArray(entries) || entries.length === 0) return null
   const salvaged: IRBlock[] = []
   let kept = 0
-  for (const block of blocks) {
+  for (const block of entries) {
     const parsed = irBlockSchema.safeParse(block)
     if (parsed.success) {
       salvaged.push(parsed.data)
@@ -187,62 +208,13 @@ function salvageBlocks(raw: unknown): IRBlock[] | null {
   return kept > 0 ? salvaged : null
 }
 
-/**
- * Converts ordinary model Markdown into the smallest useful subset of the
- * canvas IR. JSON remains preferred, but valid prose must never be discarded
- * merely because a provider ignored JSON mode.
- */
-function markdownBlocks(text: string): IRBlock[] | null {
-  const lines = text.replace(/\r\n/g, '\n').trim().split('\n')
-  if (lines.length === 0 || lines.every((line) => line.trim().length === 0)) return null
-
-  const blocks: IRBlock[] = []
-  let paragraph: string[] = []
-  let listKind: 'bullets' | 'numbered' | undefined
-  let listItems: string[] = []
-  const flushParagraph = () => {
-    const value = paragraph.join(' ').trim()
-    if (value) blocks.push({ type: 'paragraph', text: value })
-    paragraph = []
-  }
-  const flushList = () => {
-    if (listKind && listItems.length > 0) blocks.push({ type: listKind, items: listItems })
-    listKind = undefined
-    listItems = []
-  }
-
-  for (const rawLine of lines) {
-    const line = rawLine.trim()
-    if (!line) {
-      flushParagraph()
-      flushList()
-      continue
-    }
-    const bullet = line.match(/^[-*+]\s+(.+)$/)
-    const numbered = line.match(/^\d+[.)]\s+(.+)$/)
-    if (bullet || numbered) {
-      flushParagraph()
-      const nextKind = bullet ? 'bullets' : 'numbered'
-      if (listKind && listKind !== nextKind) flushList()
-      listKind = nextKind
-      listItems.push((bullet ?? numbered)![1].trim())
-      continue
-    }
-    flushList()
-    paragraph.push(line.replace(/^#{1,6}\s+/, ''))
-  }
-  flushParagraph()
-  flushList()
-
-  const parsed = sectionSchema.safeParse({ blocks })
-  return parsed.success && parsed.data.blocks.length > 0 ? parsed.data.blocks : null
-}
-
 /** Deterministic block → plain-text serialization (for validation, plan §13). */
 function blocksText(blocks: IRBlock[]): string {
   return blocks
     .map((b) => {
       switch (b.type) {
+        case 'markdown':
+          return b.source
         case 'paragraph':
           return b.text
         case 'bullets':
@@ -309,7 +281,8 @@ async function modelJson(
     {
       ...config,
       system: jsonMode
-        ? `${system}\nUse this exact JSON shape for a prose block: {"blocks":[{"type":"paragraph","text":"Example content."}]}. Never use a "content" field for paragraph text.`
+        ? `${system}\nUse this exact JSON shape: {"parts":[{"md":"Example prose with a list:\\n\\n- Item one\\n- Item two"}]}. ` +
+          `Prefer {"md":"..."} for prose; use typed widget objects only for callout/mermaid/risk/scope/kpiGrid/stakeholderTable.`
         : system,
       tools: [],
       responseFormat: jsonMode ? 'json_object' : undefined,
@@ -546,7 +519,7 @@ export class DocumentWorker {
         config,
         `Write section "${heading}" (${i + 1}/${total}) of the "${title}" document. ` +
           `Ground every factual statement in the established facts; clearly flag anything proposed. ` +
-          `Respond with ONLY a JSON block: {"blocks":[...]}.${BLOCK_SCHEMA_HINT}\n\n` +
+          `Respond with ONLY a JSON object: {"parts":[...]}.${BLOCK_SCHEMA_HINT}\n\n` +
           `Established facts (your section MUST agree with these):\n${factsSummary(this.deps.findings, this.deps.facts)}`,
         `You write technical documentation sections. Output ONLY valid JSON.`,
         ctx.signal,
@@ -691,7 +664,7 @@ export class DocumentWorker {
         `Rewrite ONLY the section "${section.heading}" of the "${title}" document. ` +
           `Validation feedback you must address: ${node.objective}\n` +
           `Ground every factual statement in the established facts; keep claims that were validated as supported. ` +
-          `Respond with ONLY a JSON block: {"blocks":[...]}.${BLOCK_SCHEMA_HINT}\n\n` +
+          `Respond with ONLY a JSON object: {"parts":[...]}.${BLOCK_SCHEMA_HINT}\n\n` +
           `Established facts (your section MUST agree with these):\n${factsSummary(this.deps.findings, this.deps.facts)}`,
         `You fix technical documentation sections. Output ONLY valid JSON.`,
         ctx.signal,
@@ -819,12 +792,14 @@ export class DocumentWorker {
     const retryText = await modelJson(
       this.deps.provider,
       ctx.loopConfig ?? this.deps.baseConfig,
-      'The previous structured response was unusable. Write the requested technical documentation section as concise Markdown now. Use plain paragraphs and Markdown lists; do not include a title or JSON.',
-      'You write technical documentation sections. Output concise Markdown only.',
+      'The previous structured response was unusable. Return ONLY JSON in this shape: ' +
+        '{"parts":[{"md":"<CommonMark/GFM for the section>"}]}. ' +
+        'Use real Markdown lists and paragraphs inside md. Do not include a section title.',
+      'You write technical documentation sections. Output ONLY valid JSON with a parts array.',
       ctx.signal,
       ctx.activity,
       ctx.modelContext,
-      false,
+      true,
     )
     return tryParse(retryText, 2)
   }

@@ -1,4 +1,5 @@
 import type { DocumentIR, DocumentSection, IRBlock } from './DocumentIR'
+import { markdownToCanvasBlocks } from './mdastToCanvas'
 
 /** Structural mirror of the webview's CanvasDocument (extension tsconfig excludes src/). */
 export interface RenderedCanvasDocument {
@@ -48,19 +49,28 @@ function renderSection(section: DocumentSection): Array<Record<string, unknown>>
 
 function renderBlock(block: IRBlock): Array<Record<string, unknown>> {
   switch (block.type) {
+    case 'markdown':
+      return markdownToCanvasBlocks(block.source) as Array<Record<string, unknown>>
     case 'paragraph':
       return [{ type: 'paragraph', content: block.text }]
     case 'bullets':
       return block.items.map((item) => ({ type: 'bulletListItem', content: item }))
     case 'numbered':
       return block.items.map((item) => ({ type: 'numberedListItem', content: item }))
-    case 'table':
-      // ponytail: no plain-table block in the canvas schema — render rows as
-      // labeled bullets. Revisit if table fidelity matters for users.
-      return block.rows.map((row) => ({
-        type: 'bulletListItem',
-        content: block.header.map((h, i) => `${h}: ${row[i] ?? ''}`).join('  |  '),
-      }))
+    case 'table': {
+      const rows = [
+        { cells: block.header },
+        ...block.rows.map((row) => ({
+          cells: block.header.map((_, i) => row[i] ?? ''),
+        })),
+      ]
+      return [
+        {
+          type: 'table',
+          content: { type: 'tableContent', rows },
+        },
+      ]
+    }
     case 'callout':
       return [
         {

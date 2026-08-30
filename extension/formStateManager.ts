@@ -61,11 +61,21 @@ async function readStateJson<T>(workspaceRoot: string, filename: string): Promis
 
 export async function initWorkspace(workspaceRoot: string): Promise<boolean> {
   const dir = primaryStateDir(workspaceRoot)
-  if (await pathExists(dir)) return false
-  // Already initialized under the legacy folder counts as initialized.
-  if (await pathExists(legacyStateDir(workspaceRoot))) return false
-  await ensureDir(dir)
-  return true
+  const alreadyPrimary = await pathExists(dir)
+  const alreadyLegacy = await pathExists(legacyStateDir(workspaceRoot))
+  if (!alreadyPrimary && !alreadyLegacy) await ensureDir(dir)
+  await ensureCharterGitignore(dir)
+  return !alreadyPrimary && !alreadyLegacy
+}
+
+/** Keep chat/session files local to the machine — docs stay commitable. */
+async function ensureCharterGitignore(stateDir: string): Promise<void> {
+  const gitignore = path.join(stateDir, '.gitignore')
+  if (await pathExists(gitignore)) return
+  await vscode.workspace.fs.writeFile(
+    vscode.Uri.file(gitignore),
+    new TextEncoder().encode('agent-session.json\n'),
+  )
 }
 
 export async function loadForm(
@@ -85,6 +95,18 @@ export async function saveForm(
   const filename = fileNameForPhase(phase)
   if (!filename) throw new Error(`Unknown phase: ${phase}`)
   await writeJson(path.join(primaryStateDir(workspaceRoot), filename), data)
+}
+
+/** Remove a canvas file from `.charter-ai/` (and the legacy state dir if present). */
+export async function deleteForm(workspaceRoot: string, phase: string): Promise<void> {
+  const filename = fileNameForPhase(phase)
+  if (!filename) return
+  for (const dir of [primaryStateDir(workspaceRoot), legacyStateDir(workspaceRoot)]) {
+    const target = path.join(dir, filename)
+    if (await pathExists(target)) {
+      await vscode.workspace.fs.delete(vscode.Uri.file(target))
+    }
+  }
 }
 
 /** Document-type definitions for the workspace. */

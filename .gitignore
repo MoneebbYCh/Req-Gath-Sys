@@ -21,3 +21,7 @@ npm-debug.log*
 # Misc
 Archive.zip
 opencode/
+
+# Project agent chat/session (docs in .charter-ai/ stay commitable)
+.charter-ai/agent-session.json
+

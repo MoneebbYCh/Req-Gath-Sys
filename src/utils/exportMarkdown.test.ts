@@ -136,6 +136,24 @@ describe('canvasToMarkdown', () => {
     ).toBe('```mermaid\nflowchart TD\n  A --> B\n```')
   })
 
+  it('renders native table, codeBlock, and quote', () => {
+    expect(
+      canvasToMarkdown(
+        doc([
+          {
+            type: 'table',
+            content: {
+              type: 'tableContent',
+              rows: [{ cells: ['A', 'B'] }, { cells: ['1', '2'] }],
+            },
+          },
+          { type: 'codeBlock', props: { language: 'ts' }, content: 'const x = 1' },
+          { type: 'quote', content: 'cited' },
+        ]),
+      ),
+    ).toBe('| A | B |\n| --- | --- |\n| 1 | 2 |\n\n```ts\nconst x = 1\n```\n\n> cited')
+  })
+
   it('skips unknown blocks', () => {
     expect(
       canvasToMarkdown(

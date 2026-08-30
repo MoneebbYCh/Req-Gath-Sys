@@ -13,7 +13,6 @@ import {
 } from '../data/documentTypes'
 import {
   documentHasContent,
-  emptyCanvasDocument,
   toCanvasDocument,
   type CanvasDocument,
 } from '../types/document'
@@ -47,11 +46,11 @@ function loadSavedDoc(phaseId: string): { doc: CanvasDocument | null; hasDraft: 
   }
 }
 
-/** Wipe all docs (built-in + custom) both locally and on disk. */
+/** Wipe all pipeline documents on disk (registry + canvas files + agent IRs). */
 function clearAllDocs() {
   const vscode = getVscodeApi()
-  const empty = emptyCanvasDocument()
-  listDocumentTypes().forEach((meta) => {
+  vscode?.postMessage({ type: 'documentResetAll' })
+  for (const meta of listDocumentTypes()) {
     try {
       localStorage.removeItem(storageKeyFor(meta.storageKey))
       if (!hasWorkspaceScope() && meta.legacyStorageKey) {
@@ -60,8 +59,7 @@ function clearAllDocs() {
     } catch {
       /* ignore storage errors */
     }
-    vscode?.postMessage({ type: 'saveCanvas', phase: meta.id, data: empty })
-  })
+  }
 }
 
 export function HomePage({

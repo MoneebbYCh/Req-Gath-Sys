@@ -13,6 +13,8 @@ export type HostToWorkerMessage =
   | { type: 'cancel'; taskId: string }
   | { type: 'resume'; taskId: string }
   | { type: 'snapshot' }
+  | { type: 'resetSession' }
+  | { type: 'forgetDocument'; documentId: string }
   | { type: 'toolResult'; callId: string; ok: boolean; result?: ToolResult<unknown>; error?: string }
   | { type: 'documentResult'; callId: string; ok: boolean; result?: unknown; error?: string }
   | { type: 'statePersistAck'; persistenceId: string; ok: boolean; error?: string }
@@ -48,6 +50,8 @@ export const hostToWorkerMessageSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('cancel'), taskId: z.string().min(1) }).strict(),
   z.object({ type: z.literal('resume'), taskId: z.string().min(1) }).strict(),
   z.object({ type: z.literal('snapshot') }).strict(),
+  z.object({ type: z.literal('resetSession') }).strict(),
+  z.object({ type: z.literal('forgetDocument'), documentId: z.string().min(1) }).strict(),
   z.object({ type: z.literal('toolResult'), callId: z.string().min(1), ok: z.boolean(), result: z.unknown().optional(), error: z.string().optional() }).strict(),
   z.object({ type: z.literal('documentResult'), callId: z.string().min(1), ok: z.boolean(), result: z.unknown().optional(), error: z.string().optional() }).strict(),
   z.object({ type: z.literal('statePersistAck'), persistenceId: z.string().min(1), ok: z.boolean(), error: z.string().optional() }).strict(),
